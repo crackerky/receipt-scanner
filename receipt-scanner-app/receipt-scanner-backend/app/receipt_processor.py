@@ -1,6 +1,8 @@
 import os
 import io
 import re
+import json
+import logging
 from datetime import datetime
 from PIL import Image
 import pytesseract
@@ -8,6 +10,12 @@ from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from typing import Dict, Any, Optional, Tuple
 
+from app.config import settings
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Date patterns for Japanese receipts
 DATE_PATTERNS = [
     r'(\d{4})[/\-年](\d{1,2})[/\-月](\d{1,2})',  # YYYY/MM/DD or YYYY-MM-DD or YYYY年MM月DD
     r'(\d{2})[/\-年](\d{1,2})[/\-月](\d{1,2})',   # YY/MM/DD or YY-MM-DD or YY年MM月DD
@@ -15,6 +23,7 @@ DATE_PATTERNS = [
     r'平成(\d{1,2})年(\d{1,2})月(\d{1,2})日',    # Heisei era
 ]
 
+# Amount patterns
 AMOUNT_PATTERNS = [
     r'合計\s*[：:]\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
     r'合計\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
@@ -22,6 +31,7 @@ AMOUNT_PATTERNS = [
     r'(小計|総額|金額)\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
 ]
 
+# Tax patterns
 TAX_PATTERNS = [
     r'(税抜|税別)\s*[：:]\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
     r'(税抜|税別)\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
@@ -30,156 +40,273 @@ TAX_PATTERNS = [
 ]
 
 class ReceiptProcessor:
+    """Secure receipt processing with fallback OCR functionality."""
+    
     def __init__(self):
-        self.openai_available = False
-        if os.environ.get("OPENAI_API_KEY"):
-            self.openai_available = True
-            self.llm = ChatOpenAI(temperature=0)
-            self.prompt = ChatPromptTemplate.from_template(
-                """
-                以下は日本のレシートのテキストです。このテキストから以下の情報を抽出してください：
-                1. 日付 (YYYY-MM-DD形式)
-                2. 店名または会社名
-                3. 合計金額 (数値のみ)
-                4. 税抜き価格 (あれば、数値のみ)
-                5. 税込み価格 (あれば、数値のみ)
-                
-                JSONフォーマットで回答してください：
-                {{
-                    "date": "YYYY-MM-DD",
-                    "store_name": "店名",
-                    "total_amount": 数値,
-                    "tax_excluded_amount": 数値 or null,
-                    "tax_included_amount": 数値 or null
-                }}
-                
-                レシートテキスト:
-                {text}
-                """
-            )
+        """Initialize the receipt processor with secure configuration."""
+        self.openai_available = settings.openai_available
+        
+        if self.openai_available:
+            try:
+                self.llm = ChatOpenAI(
+                    api_key=settings.openai_api_key,
+                    temperature=0,
+                    max_retries=3,
+                    request_timeout=30.0
+                )
+                self.prompt = self._create_prompt_template()
+                logger.info("OpenAI API initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenAI API: {e}")
+                self.openai_available = False
+        else:
+            logger.info("OpenAI API not available, using fallback OCR processing")
+        
+        # Configure Tesseract if custom path is provided
+        if settings.tessdata_prefix:
+            os.environ['TESSDATA_PREFIX'] = settings.tessdata_prefix
+    
+    def _create_prompt_template(self) -> ChatPromptTemplate:
+        """Create a secure prompt template for OpenAI."""
+        return ChatPromptTemplate.from_template(
+            """
+            以下は日本のレシートのテキストです。このテキストから以下の情報を抽出してください：
+            1. 日付 (YYYY-MM-DD形式)
+            2. 店名または会社名
+            3. 合計金額 (数値のみ)
+            4. 税抜き価格 (あれば、数値のみ)
+            5. 税込み価格 (あれば、数値のみ)
+            
+            JSONフォーマットで回答してください：
+            {{
+                "date": "YYYY-MM-DD",
+                "store_name": "店名",
+                "total_amount": 数値,
+                "tax_excluded_amount": 数値 or null,
+                "tax_included_amount": 数値 or null
+            }}
+            
+            レシートテキスト:
+            {text}
+            """
+        )
     
     def process_image(self, image_bytes: bytes) -> Dict[str, Any]:
-        """Process receipt image and extract information."""
+        """Process receipt image and extract information securely."""
         try:
+            # Validate image
+            if not self._validate_image(image_bytes):
+                return {
+                    "success": False,
+                    "message": "無効な画像ファイルです。JPEGまたはPNG形式の画像をアップロードしてください。",
+                    "data": None
+                }
+            
+            # Open and preprocess image
             image = Image.open(io.BytesIO(image_bytes))
+            image = self._preprocess_image(image)
             
+            # Extract text using OCR
             text = pytesseract.image_to_string(image, lang='jpn+eng')
+            logger.info(f"OCR extracted text length: {len(text)}")
             
+            # Process text based on available services
             if self.openai_available:
-                return self._extract_with_ai(text)
+                result = self._extract_with_ai(text)
+                if not result["success"]:
+                    logger.warning("AI extraction failed, falling back to regex")
+                    result = self._extract_with_regex(text)
             else:
-                return self._extract_with_regex(text)
+                result = self._extract_with_regex(text)
+            
+            return result
+            
         except Exception as e:
+            logger.error(f"Error processing image: {e}")
             return {
                 "success": False,
                 "message": f"画像処理中にエラーが発生しました: {str(e)}",
                 "data": None
             }
     
-    def _extract_with_regex(self, text: str) -> Dict[str, Any]:
-        """Extract receipt information using regex patterns."""
-        date_str = self._extract_date(text)
-        store_name = self._extract_store_name(text)
-        total_amount = self._extract_amount(text)
-        tax_excluded, tax_included = self._extract_tax_amounts(text)
-        
-        if not date_str or not store_name or not total_amount:
-            missing = []
-            if not date_str:
-                missing.append("日付")
-            if not store_name:
-                missing.append("店名")
-            if not total_amount:
-                missing.append("合計金額")
+    def _validate_image(self, image_bytes: bytes) -> bool:
+        """Validate image format and size."""
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
             
-            return {
-                "success": False,
-                "message": f"必要な情報（{', '.join(missing)}）を抽出できませんでした。画像の品質を確認し、再度お試しください。",
-                "data": None
-            }
+            # Check format
+            if image.format not in ['JPEG', 'PNG']:
+                return False
+            
+            # Check size (max 10MB)
+            if len(image_bytes) > 10 * 1024 * 1024:
+                return False
+            
+            # Check dimensions (reasonable limits)
+            width, height = image.size
+            if width > 5000 or height > 5000:
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+    
+    def _preprocess_image(self, image: Image.Image) -> Image.Image:
+        """Preprocess image for better OCR results."""
+        # Convert to RGB if necessary
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
         
-        return {
-            "success": True,
-            "message": "レシート情報を抽出しました。",
-            "data": {
-                "date": date_str,
-                "store_name": store_name,
-                "total_amount": total_amount,
-                "tax_excluded_amount": tax_excluded,
-                "tax_included_amount": tax_included,
-                "expense_category": None  # Will be set by frontend
-            }
-        }
+        # Resize if too large
+        width, height = image.size
+        if width > 2000 or height > 2000:
+            ratio = min(2000/width, 2000/height)
+            new_width = int(width * ratio)
+            new_height = int(height * ratio)
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        return image
     
     def _extract_with_ai(self, text: str) -> Dict[str, Any]:
-        """Extract receipt information using AI."""
+        """Extract receipt information using OpenAI API with error handling."""
         try:
+            if not text.strip():
+                return {
+                    "success": False,
+                    "message": "OCRでテキストを抽出できませんでした。",
+                    "data": None
+                }
+            
             response = self.llm.invoke(self.prompt.format(text=text))
             result = response.content
             
-            import json
-            import re
-            
+            # Extract JSON from response
             json_match = re.search(r'{.*}', result, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                data = json.loads(json_str)
-                
-                if not data.get("date") or not data.get("store_name") or not data.get("total_amount"):
-                    missing = []
-                    if not data.get("date"):
-                        missing.append("日付")
-                    if not data.get("store_name"):
-                        missing.append("店名")
-                    if not data.get("total_amount"):
-                        missing.append("合計金額")
-                    
-                    return {
-                        "success": False,
-                        "message": f"必要な情報（{', '.join(missing)}）を抽出できませんでした。画像の品質を確認し、再度お試しください。",
-                        "data": None
-                    }
-                
+            if not json_match:
+                logger.warning("No JSON found in AI response")
                 return {
-                    "success": True,
-                    "message": "レシート情報を抽出しました。",
-                    "data": {
-                        "date": data.get("date"),
-                        "store_name": data.get("store_name"),
-                        "total_amount": float(data.get("total_amount")),
-                        "tax_excluded_amount": float(data.get("tax_excluded_amount")) if data.get("tax_excluded_amount") else None,
-                        "tax_included_amount": float(data.get("tax_included_amount")) if data.get("tax_included_amount") else None,
-                        "expense_category": None  # Will be set by frontend
-                    }
+                    "success": False,
+                    "message": "AI処理でJSONを抽出できませんでした。",
+                    "data": None
                 }
-            else:
-                return self._extract_with_regex(text)
-                
+            
+            json_str = json_match.group(0)
+            data = json.loads(json_str)
+            
+            # Validate required fields
+            missing_fields = []
+            if not data.get("date"):
+                missing_fields.append("日付")
+            if not data.get("store_name"):
+                missing_fields.append("店名")
+            if not data.get("total_amount"):
+                missing_fields.append("合計金額")
+            
+            if missing_fields:
+                return {
+                    "success": False,
+                    "message": f"必要な情報（{', '.join(missing_fields)}）を抽出できませんでした。",
+                    "data": None
+                }
+            
+            # Process and validate data
+            processed_data = {
+                "date": data.get("date"),
+                "store_name": data.get("store_name"),
+                "total_amount": float(data.get("total_amount")),
+                "tax_excluded_amount": float(data.get("tax_excluded_amount")) if data.get("tax_excluded_amount") else None,
+                "tax_included_amount": float(data.get("tax_included_amount")) if data.get("tax_included_amount") else None,
+                "expense_category": None
+            }
+            
+            return {
+                "success": True,
+                "message": "AI処理でレシート情報を抽出しました。",
+                "data": processed_data
+            }
+            
+        except json.JSONDecodeError:
+            logger.error("Failed to parse JSON from AI response")
+            return {
+                "success": False,
+                "message": "AI処理のレスポンスが無効でした。",
+                "data": None
+            }
         except Exception as e:
-            return self._extract_with_regex(text)
+            logger.error(f"AI extraction error: {e}")
+            return {
+                "success": False,
+                "message": "AI処理中にエラーが発生しました。",
+                "data": None
+            }
+    
+    def _extract_with_regex(self, text: str) -> Dict[str, Any]:
+        """Extract receipt information using regex patterns as fallback."""
+        try:
+            date_str = self._extract_date(text)
+            store_name = self._extract_store_name(text)
+            total_amount = self._extract_amount(text)
+            tax_excluded, tax_included = self._extract_tax_amounts(text)
+            
+            missing_fields = []
+            if not date_str:
+                missing_fields.append("日付")
+            if not store_name:
+                missing_fields.append("店名")
+            if not total_amount:
+                missing_fields.append("合計金額")
+            
+            if missing_fields:
+                return {
+                    "success": False,
+                    "message": f"必要な情報（{', '.join(missing_fields)}）を抽出できませんでした。画像の品質を確認し、再度お試しください。",
+                    "data": None
+                }
+            
+            return {
+                "success": True,
+                "message": "OCR処理でレシート情報を抽出しました。",
+                "data": {
+                    "date": date_str,
+                    "store_name": store_name,
+                    "total_amount": total_amount,
+                    "tax_excluded_amount": tax_excluded,
+                    "tax_included_amount": tax_included,
+                    "expense_category": None
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Regex extraction error: {e}")
+            return {
+                "success": False,
+                "message": "正規表現処理中にエラーが発生しました。",
+                "data": None
+            }
     
     def _extract_date(self, text: str) -> Optional[str]:
         """Extract date from receipt text."""
         for pattern in DATE_PATTERNS:
             matches = re.search(pattern, text)
             if matches:
-                if "令和" in pattern:
-                    year = 2018 + int(matches.group(1))
-                    month = int(matches.group(2))
-                    day = int(matches.group(3))
-                elif "平成" in pattern:
-                    year = 1988 + int(matches.group(1))
-                    month = int(matches.group(2))
-                    day = int(matches.group(3))
-                else:
-                    year = int(matches.group(1))
-                    month = int(matches.group(2))
-                    day = int(matches.group(3))
-                    
-                    if year < 100:
-                        year += 2000 if year < 50 else 1900
-                
                 try:
+                    if "令和" in pattern:
+                        year = 2018 + int(matches.group(1))
+                        month = int(matches.group(2))
+                        day = int(matches.group(3))
+                    elif "平成" in pattern:
+                        year = 1988 + int(matches.group(1))
+                        month = int(matches.group(2))
+                        day = int(matches.group(3))
+                    else:
+                        year = int(matches.group(1))
+                        month = int(matches.group(2))
+                        day = int(matches.group(3))
+                        
+                        if year < 100:
+                            year += 2000 if year < 50 else 1900
+                    
                     date_obj = datetime(year, month, day)
                     return date_obj.strftime("%Y-%m-%d")
                 except ValueError:
@@ -189,15 +316,21 @@ class ReceiptProcessor:
     
     def _extract_store_name(self, text: str) -> Optional[str]:
         """Extract store name from receipt text."""
-        lines = text.split('\n')
-        for i in range(min(5, len(lines))):
-            line = lines[i].strip()
-            if line and len(line) > 1 and not any(char.isdigit() for char in line):
-                return line
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
         
+        # Try to find a line that looks like a store name (first few lines, no numbers)
+        for i in range(min(5, len(lines))):
+            line = lines[i]
+            if line and len(line) > 1 and not any(char.isdigit() for char in line):
+                # Remove common OCR artifacts
+                cleaned = re.sub(r'[^\w\s\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', '', line)
+                if cleaned:
+                    return cleaned
+        
+        # Fallback: return first non-empty line
         for line in lines:
-            if line.strip():
-                return line.strip()
+            if line:
+                return line
         
         return None
     
@@ -206,11 +339,11 @@ class ReceiptProcessor:
         for pattern in AMOUNT_PATTERNS:
             matches = re.search(pattern, text)
             if matches:
-                amount_str = matches.group(1) if "合計" in pattern else matches.group(2)
-                amount_str = amount_str.replace(',', '')
                 try:
+                    amount_str = matches.group(1) if "合計" in pattern else matches.group(2)
+                    amount_str = amount_str.replace(',', '')
                     return float(amount_str)
-                except ValueError:
+                except (ValueError, IndexError):
                     continue
         
         return None
@@ -223,16 +356,17 @@ class ReceiptProcessor:
         for pattern in TAX_PATTERNS:
             matches = re.search(pattern, text)
             if matches:
-                tax_type = matches.group(1)
-                amount_str = matches.group(2) if "税抜" in pattern or "税別" in pattern or "税込" in pattern else matches.group(2)
-                amount_str = amount_str.replace(',', '')
                 try:
+                    tax_type = matches.group(1)
+                    amount_str = matches.group(2)
+                    amount_str = amount_str.replace(',', '')
                     amount = float(amount_str)
+                    
                     if "税抜" in tax_type or "税別" in tax_type:
                         tax_excluded = amount
                     elif "税込" in tax_type:
                         tax_included = amount
-                except ValueError:
+                except (ValueError, IndexError):
                     continue
         
         return tax_excluded, tax_included
