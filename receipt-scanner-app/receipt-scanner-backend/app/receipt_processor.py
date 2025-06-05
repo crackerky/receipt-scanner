@@ -11,8 +11,15 @@ import pytesseract
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from typing import Dict, Any, Optional, Tuple
-import cv2
-import numpy as np
+
+# OpenCVのインポートを条件付きに
+try:
+    import cv2
+    import numpy as np
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    logging.warning("OpenCV not available. Advanced image processing will be disabled.")
 
 from app.config import settings
 
@@ -96,6 +103,7 @@ class ReceiptProcessor:
         """Initialize the receipt processor with secure configuration."""
         self.openai_available = settings.openai_available
         self.tesseract_available = tesseract_available
+        self.cv2_available = CV2_AVAILABLE
         
         if not self.tesseract_available:
             logger.error("Tesseract OCR is not available. Please install Tesseract OCR.")
@@ -166,6 +174,10 @@ class ReceiptProcessor:
     
     def _preprocess_image_advanced(self, image: Image.Image) -> Image.Image:
         """画像の前処理を実施（記事を参考に実装）"""
+        if not self.cv2_available:
+            logger.info("OpenCV not available, using basic preprocessing")
+            return self._preprocess_image_basic(image)
+            
         try:
             # PIL ImageをOpenCV形式に変換
             img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -260,13 +272,8 @@ class ReceiptProcessor:
             image = Image.open(io.BytesIO(image_bytes))
             logger.info(f"Original image size: {image.size}, mode: {image.mode}")
             
-            # 高度な前処理を試みる
-            try:
-                import cv2
-                processed_image = self._preprocess_image_advanced(image)
-            except ImportError:
-                logger.warning("OpenCV not available, using basic preprocessing")
-                processed_image = self._preprocess_image_basic(image)
+            # 前処理を実行（OpenCVが利用可能なら高度な処理、なければ基本的な処理）
+            processed_image = self._preprocess_image_advanced(image)
             
             # Extract text using OCR with custom config
             logger.info("Starting OCR processing...")
