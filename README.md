@@ -7,11 +7,12 @@ AIとOCRを活用した日本語レシート処理システムです。APIキー
 ## 🆕 新機能
 
 ### ✨ 最新アップデート (2025.06.05)
+- **🔍 OCR処理の大幅改善**: 画像前処理（ノイズ除去、コントラスト調整、二値化）を追加
 - **📝 レシート編集機能**: アップロード済みレシートの情報を後から編集可能
 - **🗑️ レシート削除機能**: 間違えてアップロードしたレシートを削除可能
 - **📅 日付自動補完**: レシートから日付が読み取れない場合、自動的に現在の日付を設定
-- **🔍 OCR処理改善**: Tesseractパスの自動検出とデバッグログの追加
 - **⏰ アップロード日時表示**: レシートをアップロードした日時を記録・表示
+- **🐛 デバッグ機能強化**: OCRテストスクリプトを追加
 
 ## 🛡️ セキュリティ機能
 
@@ -26,7 +27,33 @@ AIとOCRを活用した日本語レシート処理システムです。APIキー
 
 ## 🚀 クイックスタート
 
-### 1. GitHub Repository Secrets の設定
+### 1. OCR環境のセットアップ
+
+#### Tesseract OCRのインストール（必須）
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr tesseract-ocr-jpn tesseract-ocr-eng
+# 確認
+tesseract --version
+tesseract --list-langs | grep -E "jpn|eng"
+```
+
+**macOS:**
+```bash
+brew install tesseract tesseract-lang
+# 確認
+tesseract --version
+tesseract --list-langs | grep -E "jpn|eng"
+```
+
+**Windows:**
+1. [GitHub](https://github.com/UB-Mannheim/tesseract/wiki)からインストーラーをダウンロード
+2. インストール時に「Additional language data」で「Japanese」を選択
+3. 環境変数PATHに`C:\Program Files\Tesseract-OCR`を追加
+
+### 2. GitHub Repository Secrets の設定
 
 リポジトリの **Settings → Secrets and variables → Actions** で以下を設定:
 
@@ -42,7 +69,7 @@ SECRET_KEY=your-jwt-secret-key
 VITE_API_URL=https://your-api-domain.com
 ```
 
-### 2. ローカル開発環境
+### 3. ローカル開発環境
 
 ```bash
 # リポジトリをクローン
@@ -57,14 +84,11 @@ cp .env.example .env
 # 依存関係インストール
 poetry install
 
-# Tesseract OCR インストール
-# Ubuntu/Debian:
-sudo apt-get install tesseract-ocr tesseract-ocr-jpn
-# macOS:
-brew install tesseract tesseract-lang
+# OCRテスト（オプション）
+python test_ocr.py [レシート画像パス]
 
 # 開発サーバー起動
-poetry run uvicorn app.main:app --reload --port 8000
+poetry run uvicorn app.main:app --reload --port 8000 --log-level debug
 ```
 
 ```bash
@@ -76,7 +100,7 @@ npm install
 npm run dev
 ```
 
-### 3. 動作確認
+### 4. 動作確認
 
 1. ブラウザで `http://localhost:3000` にアクセス
 2. レシート画像をアップロード
@@ -88,6 +112,7 @@ npm run dev
 - 画像から自動的に店名、日付、金額を抽出
 - 日付が読み取れない場合は自動的に現在の日付を設定
 - AI（OpenAI）またはOCR（Tesseract）で処理
+- 画像前処理により認識精度を向上
 
 ### レシート管理
 - **編集**: レシート一覧から編集ボタン（✏️）をクリック
@@ -97,6 +122,62 @@ npm run dev
 ### データ分析
 - 費目別の支出をグラフで可視化
 - カテゴリー別の経費集計
+
+## 🔍 OCRトラブルシューティング
+
+### OCRが動作しない場合
+
+#### 1. Tesseractの確認
+```bash
+# インストール確認
+tesseract --version
+
+# 言語データ確認
+tesseract --list-langs
+
+# 日本語データが表示されない場合
+sudo apt-get install tesseract-ocr-jpn  # Ubuntu/Debian
+brew install tesseract-lang              # macOS
+```
+
+#### 2. OCRテストスクリプトの実行
+```bash
+cd receipt-scanner-app/receipt-scanner-backend
+python test_ocr.py test_receipt.jpg
+```
+
+#### 3. よくあるエラーと対処法
+
+**TesseractNotFoundError**
+```bash
+# Tesseractがインストールされていません
+# 上記のインストール手順を実行してください
+```
+
+**言語データエラー**
+```
+Failed loading language 'jpn'
+```
+解決策: 日本語データをインストール
+```bash
+sudo apt-get install tesseract-ocr-jpn
+```
+
+**画像品質の問題**
+- 画像が暗い、ぼやけている → より明るく鮮明な画像を使用
+- 傾いている → アプリが自動補正しますが、できるだけ正面から撮影
+- 小さすぎる → 最低でも1000x1000ピクセル以上推奨
+
+#### 4. ログの確認
+```bash
+# バックエンドのログを確認
+poetry run uvicorn app.main:app --reload --port 8000 --log-level debug
+```
+
+デバッグログで以下を確認:
+- `Tesseract found at: [パス]`
+- `Available Tesseract languages: ['eng', 'jpn', ...]`
+- `OCR extracted text length: [文字数]`
 
 ## 🌐 デプロイメント
 
@@ -114,21 +195,6 @@ npm run dev
    ```
 6. **Deploy siteをクリック**
 
-#### 方法2: 手動設定
-
-Netlifyダッシュボードで以下を設定:
-
-**Build settings:**
-- Build command: `npm ci && npm run build`
-- Publish directory: `receipt-scanner-app/receipt-scanner-frontend/dist`
-- Base directory: `receipt-scanner-app/receipt-scanner-frontend`
-
-**Environment variables:**
-```
-VITE_API_URL = https://your-backend-api-url.com
-NODE_VERSION = 18
-```
-
 ### Railway (バックエンド推奨)
 
 ```bash
@@ -140,16 +206,7 @@ railway variables set ENVIRONMENT=production
 railway up
 ```
 
-### Vercel (フロントエンド代替案)
-
-```bash
-npm install -g vercel
-cd receipt-scanner-app/receipt-scanner-frontend
-vercel env add VITE_API_URL production
-vercel --prod
-```
-
-## 🐳 Docker での実行
+### Docker での実行
 
 ```bash
 # バックエンドのみ
@@ -188,6 +245,7 @@ docker run -p 8000:8000 \
 | `RATE_LIMIT_REQUESTS` | ❌ | `10` | レート制限リクエスト数 |
 | `RATE_LIMIT_WINDOW` | ❌ | `60` | レート制限時間窓（秒） |
 | `ALLOWED_ORIGINS` | ❌ | `http://localhost:3000` | CORS許可オリジン |
+| `TESSDATA_PREFIX` | ❌ | - | Tesseractデータディレクトリ |
 
 **フロントエンド:**
 | 変数名 | 必須 | デフォルト | 説明 |
@@ -199,33 +257,17 @@ docker run -p 8000:8000 \
 ## 🧪 テスト
 
 ```bash
-# バックエンドテスト
+# OCRテスト
 cd receipt-scanner-app/receipt-scanner-backend
+python test_ocr.py test_receipt.jpg
+
+# バックエンドテスト
 poetry run pytest tests/ -v
 
 # フロントエンドテスト
 cd receipt-scanner-app/receipt-scanner-frontend
 npm test
 npm run lint
-```
-
-## 📈 モニタリング
-
-### ヘルスチェック
-
-```bash
-curl http://localhost:8000/healthz
-curl http://localhost:8000/api/status
-```
-
-### ログ確認
-
-```bash
-# Docker ログ
-docker logs receipt-scanner-backend -f
-
-# 開発ログ
-tail -f logs/app.log
 ```
 
 ## 🛡️ セキュリティガイドライン
@@ -243,63 +285,6 @@ tail -f logs/app.log
 2. **環境変数での設定管理**
 3. **レート制限の適切な設定**
 4. **定期的なAPIキー更新**
-
-### 緊急時の対応
-
-APIキーが漏洩した場合:
-
-1. **即座にOpenAIダッシュボードでAPIキー削除**
-2. **新しいAPIキーを生成**
-3. **GitHub Repository Secretsを更新**
-4. **使用量を監視**
-
-## 🔍 トラブルシューティング
-
-### よくある問題
-
-#### OpenAI API エラー
-```
-Error: OpenAI API key not provided
-```
-**解決策**: GitHub Repository Secretsで`OPENAI_API_KEY`が正しく設定されているか確認
-
-#### Tesseract エラー
-```
-TesseractNotFoundError
-```
-**解決策**: 
-```bash
-# Tesseractのインストール状態を確認
-tesseract --version
-
-# 日本語データの確認
-tesseract --list-langs | grep jpn
-
-# インストールされていない場合
-sudo apt-get install tesseract-ocr tesseract-ocr-jpn
-```
-
-#### CORS エラー
-```
-Access-Control-Allow-Origin error
-```
-**解決策**: `ALLOWED_ORIGINS`環境変数を確認
-
-#### レート制限エラー
-```
-Rate limit exceeded
-```
-**解決策**: 1分間に10回以下のリクエストに調整
-
-#### Netlify デプロイエラー
-```
-npm error enoent Could not read package.json
-```
-**解決策**: 
-1. リポジトリルートに`netlify.toml`が存在することを確認
-2. Netlifyダッシュボードで Base directory を `receipt-scanner-app/receipt-scanner-frontend` に設定
-3. Build command を `npm ci && npm run build` に設定
-4. Publish directory を `dist` に設定
 
 ## 🤝 コントリビューション
 
