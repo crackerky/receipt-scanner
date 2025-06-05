@@ -24,18 +24,9 @@ WORKDIR /app
 # Pythonパッケージを直接インストール（Poetryを使わない）
 RUN pip install --upgrade pip
 
-# 依存関係を直接インストール
-RUN pip install \
-    fastapi[standard]==0.115.12 \
-    "psycopg[binary]>=3.2.9" \
-    python-multipart==0.0.20 \
-    pillow==11.2.1 \
-    pytesseract==0.3.13 \
-    langchain-openai==0.3.16 \
-    python-dotenv==1.1.0 \
-    langchain==0.3.25 \
-    requests \
-    uvicorn[standard]
+# requirements.txtをコピーして依存関係をインストール
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # アプリケーションコードのコピー
 COPY app/ ./app/
