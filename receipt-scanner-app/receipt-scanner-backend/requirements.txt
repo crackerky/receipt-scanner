@@ -1,0 +1,10 @@
+fastapi[standard]==0.115.12
+psycopg[binary]>=3.2.9
+python-multipart==0.0.20
+pillow==11.2.1
+pytesseract==0.3.13
+langchain-openai==0.3.16
+python-dotenv==1.1.0
+langchain==0.3.25
+requests
+uvicorn[standard]
