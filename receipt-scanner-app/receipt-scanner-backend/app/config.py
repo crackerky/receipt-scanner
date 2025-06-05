@@ -63,14 +63,19 @@ class Settings:
     
     def _setup_secure_logging(self):
         """Setup logging to exclude sensitive information."""
+        # Create a filter with access to settings
+        openai_api_key = self.openai_api_key
+        secret_key = self.secret_key
+        
         class SanitizeFilter(logging.Filter):
             def filter(self, record):
                 if hasattr(record, 'msg'):
                     msg = str(record.msg)
                     # Replace API keys and other sensitive data
-                    if self.openai_api_key:
-                        msg = msg.replace(self.openai_api_key, '***REDACTED***')
-                    msg = msg.replace(self.secret_key, '***REDACTED***')
+                    if openai_api_key:
+                        msg = msg.replace(openai_api_key, '***REDACTED***')
+                    if secret_key:
+                        msg = msg.replace(secret_key, '***REDACTED***')
                     record.msg = msg
                 return True
         
