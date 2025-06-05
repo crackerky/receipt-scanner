@@ -8,3 +8,5 @@ python-dotenv==1.1.0
 langchain==0.3.25
 requests
 uvicorn[standard]
+opencv-python==4.9.0.80
+numpy>=1.26.4
