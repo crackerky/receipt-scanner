@@ -10,13 +10,15 @@ class Settings:
     """Application settings with secure environment variable handling."""
     
     def __init__(self):
+        # First, set environment and debug to avoid dependency issues
+        self.environment = os.getenv("ENVIRONMENT", "development")
+        self.debug = os.getenv("DEBUG", "false").lower() == "true"
+        
         # Required environment variables
         self.openai_api_key = self._get_required_env("OPENAI_API_KEY")
         
         # Optional environment variables with defaults
         self.database_url = os.getenv("DATABASE_URL", "postgresql://localhost:5432/receipt_scanner")
-        self.environment = os.getenv("ENVIRONMENT", "development")
-        self.debug = os.getenv("DEBUG", "false").lower() == "true"
         self.secret_key = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
         
         # Tesseract configuration
