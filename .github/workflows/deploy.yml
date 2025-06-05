@@ -1,4 +1,4 @@
-name: Deploy Receipt Scanner
+name: Deploy to Railway and Netlify
 
 on:
   push:
@@ -6,186 +6,64 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  NODE_VERSION: '18'
-  PYTHON_VERSION: '3.12'
-
 jobs:
-  test-backend:
+  deploy-backend:
+    name: Deploy Backend to Railway
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-    
-    - name: Install Poetry
-      uses: snok/install-poetry@v1
-      with:
-        version: latest
-        virtualenvs-create: true
-        virtualenvs-in-project: true
-    
-    - name: Load cached venv
-      id: cached-poetry-dependencies
-      uses: actions/cache@v3
-      with:
-        path: receipt-scanner-app/receipt-scanner-backend/.venv
-        key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-    
-    - name: Install dependencies
-      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-      working-directory: ./receipt-scanner-app/receipt-scanner-backend
-      run: poetry install --no-interaction --no-root
-    
-    - name: Install Tesseract
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y tesseract-ocr tesseract-ocr-jpn
-    
-    - name: Run backend tests
-      working-directory: ./receipt-scanner-app/receipt-scanner-backend
-      env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        ENVIRONMENT: test
-      run: |
-        poetry run python -m pytest tests/ -v
-
-  test-frontend:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Node.js
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: ${{ env.NODE_VERSION }}
-        cache: 'npm'
-        cache-dependency-path: receipt-scanner-app/receipt-scanner-frontend/package-lock.json
-    
-    - name: Install frontend dependencies
-      working-directory: ./receipt-scanner-app/receipt-scanner-frontend
-      run: npm ci
-    
-    - name: Run frontend tests
-      working-directory: ./receipt-scanner-app/receipt-scanner-frontend
-      run: npm run test --if-present
-    
-    - name: Run frontend linting
-      working-directory: ./receipt-scanner-app/receipt-scanner-frontend
-      run: npm run lint
-    
-    - name: Build frontend
-      working-directory: ./receipt-scanner-app/receipt-scanner-frontend
-      env:
-        VITE_API_URL: ${{ secrets.VITE_API_URL }}
-      run: npm run build
-
-  security-scan:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-    
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
-      if: always()
-      with:
-        sarif_file: 'trivy-results.sarif'
-
-  deploy-backend:
-    needs: [test-backend, test-frontend]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Login to Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Build and push backend image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./receipt-scanner-app/receipt-scanner-backend
-        push: true
-        tags: |
-          ghcr.io/${{ github.repository }}/backend:latest
-          ghcr.io/${{ github.repository }}/backend:${{ github.sha }}
-        secrets: |
-          openai_api_key=${{ secrets.OPENAI_API_KEY }}
-    
-    - name: Deploy to Railway (Backend)
-      if: success()
+        node-version: '18'
+        
+    - name: Install Railway CLI
+      run: npm install -g @railway/cli
+      
+    - name: Deploy to Railway
       env:
         RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
-        npm install -g @railway/cli
-        railway up --service backend
+        cd receipt-scanner-app/receipt-scanner-backend
+        railway login --token $RAILWAY_TOKEN
+        railway variables set OPENAI_API_KEY="$OPENAI_API_KEY"
+        railway variables set ENVIRONMENT="production"
+        railway up --detach
 
   deploy-frontend:
-    needs: [test-backend, test-frontend]
+    name: Deploy Frontend to Netlify
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: deploy-backend
     
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Node.js
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: ${{ env.NODE_VERSION }}
-        cache: 'npm'
-        cache-dependency-path: receipt-scanner-app/receipt-scanner-frontend/package-lock.json
-    
+        node-version: '18'
+        
     - name: Install dependencies
-      working-directory: ./receipt-scanner-app/receipt-scanner-frontend
-      run: npm ci
-    
-    - name: Build application
-      working-directory: ./receipt-scanner-app/receipt-scanner-frontend
-      env:
-        VITE_API_URL: ${{ secrets.VITE_API_URL }}
-      run: npm run build
-    
-    - name: Deploy to Vercel
-      uses: amondnet/vercel-action@v25
-      with:
-        vercel-token: ${{ secrets.VERCEL_TOKEN }}
-        vercel-args: '--prod'
-        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-        working-directory: ./receipt-scanner-app/receipt-scanner-frontend
-
-  notify-deployment:
-    needs: [deploy-backend, deploy-frontend]
-    runs-on: ubuntu-latest
-    if: always() && github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: Notify deployment status
-      env:
-        DEPLOYMENT_STATUS: ${{ needs.deploy-backend.result == 'success' && needs.deploy-frontend.result == 'success' && 'success' || 'failure' }}
       run: |
-        echo "Deployment status: $DEPLOYMENT_STATUS"
-        # Add your notification logic here (Slack, Discord, etc.)
+        cd receipt-scanner-app/receipt-scanner-frontend
+        npm ci
+        
+    - name: Build for production
+      env:
+        VITE_API_URL: ${{ secrets.RAILWAY_API_URL }}
+      run: |
+        cd receipt-scanner-app/receipt-scanner-frontend
+        npm run build
+        
+    - name: Deploy to Netlify
+      env:
+        NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+      run: |
+        cd receipt-scanner-app/receipt-scanner-frontend
+        npx netlify-cli deploy --prod --dir=dist
