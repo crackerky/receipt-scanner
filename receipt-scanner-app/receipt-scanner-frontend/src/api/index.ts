@@ -93,6 +93,22 @@ export async function getReceipts(): Promise<ApiResponse> {
   return apiRequest(`${API_URL}/api/receipts`);
 }
 
+export async function deleteReceipt(receiptId: number): Promise<ApiResponse> {
+  return apiRequest(`${API_URL}/api/receipts/${receiptId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function updateReceipt(receiptId: number, data: any): Promise<ApiResponse> {
+  return apiRequest(`${API_URL}/api/receipts/${receiptId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
 export async function exportReceipts(): Promise<string> {
   const response = await apiRequest<ExportResponse>(`${API_URL}/api/receipts/export`);
   
