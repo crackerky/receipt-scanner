@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgomp1 \
-    libglib2.0-0 \
     libgl1-mesa-glx \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -22,43 +21,21 @@ RUN apt-get update && apt-get install -y \
 # 作業ディレクトリの設定
 WORKDIR /app
 
-# Poetry のインストール
-RUN pip install --upgrade pip && \
-    pip install poetry
+# Pythonパッケージを直接インストール（Poetryを使わない）
+RUN pip install --upgrade pip
 
-# Poetry 設定（仮想環境を作成しない）
-ENV POETRY_NO_INTERACTION=1 \
-    POETRY_VIRTUALENVS_CREATE=false \
-    POETRY_CACHE_DIR=/tmp/poetry_cache \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# 依存関係ファイルのコピー
-COPY pyproject.toml poetry.lock ./
-
-# デバッグ情報の表示
-RUN echo "=== Python version ===" && \
-    python --version && \
-    echo "=== Poetry version ===" && \
-    poetry --version && \
-    echo "=== pyproject.toml content ===" && \
-    cat pyproject.toml && \
-    echo "=== Poetry check ===" && \
-    poetry check || true
-
-# 依存関係のインストール（システム環境に直接）
-# エラーを無視せずに各ステップを個別に実行
-RUN poetry config virtualenvs.create false
-
-# mainグループのみをインストール（オプショナルグループを除外）
-RUN poetry install --only=main --no-root --no-interaction -vvv || \
-    (echo "=== Poetry install failed. Showing dependencies ===" && \
-     poetry show --tree || true && \
-     echo "=== Trying without lock file ===" && \
-     poetry install --only=main --no-root --no-interaction --no-ansi || exit 1)
-
-# キャッシュディレクトリのクリーンアップ
-RUN rm -rf $POETRY_CACHE_DIR
+# 依存関係を直接インストール
+RUN pip install \
+    fastapi[standard]==0.115.12 \
+    "psycopg[binary]>=3.2.9" \
+    python-multipart==0.0.20 \
+    pillow==11.2.1 \
+    pytesseract==0.3.13 \
+    langchain-openai==0.3.16 \
+    python-dotenv==1.1.0 \
+    langchain==0.3.25 \
+    requests \
+    uvicorn[standard]
 
 # アプリケーションコードのコピー
 COPY app/ ./app/
