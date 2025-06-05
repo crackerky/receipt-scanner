@@ -23,23 +23,24 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Poetry のインストール
-RUN pip install poetry
+RUN pip install --upgrade pip && \
+    pip install poetry
 
 # Poetry 設定（仮想環境を作成しない）
 ENV POETRY_NO_INTERACTION=1 \
-    POETRY_VENV_IN_PROJECT=false \
-    POETRY_CACHE_DIR=/tmp/poetry_cache
+    POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_CACHE_DIR=/tmp/poetry_cache \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 # 依存関係ファイルのコピー
-COPY pyproject.toml ./
-# poetry.lockがない場合でも動作するように条件付きコピー
-COPY poetry.loc[k] ./
+COPY pyproject.toml poetry.lock ./
 
 # 依存関係のインストール（システム環境に直接）
-# poetry.lockがない場合は自動生成
-RUN poetry config virtualenvs.create false \
-    && poetry install --only=main --no-root --no-interaction \
-    && rm -rf $POETRY_CACHE_DIR
+# エラー時の詳細を表示するために--verboseを追加
+RUN poetry config virtualenvs.create false && \
+    poetry install --only=main --no-root --no-interaction --verbose && \
+    rm -rf $POETRY_CACHE_DIR
 
 # アプリケーションコードのコピー
 COPY app/ ./app/
