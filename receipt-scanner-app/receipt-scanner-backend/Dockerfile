@@ -36,11 +36,29 @@ ENV POETRY_NO_INTERACTION=1 \
 # 依存関係ファイルのコピー
 COPY pyproject.toml poetry.lock ./
 
+# デバッグ情報の表示
+RUN echo "=== Python version ===" && \
+    python --version && \
+    echo "=== Poetry version ===" && \
+    poetry --version && \
+    echo "=== pyproject.toml content ===" && \
+    cat pyproject.toml && \
+    echo "=== Poetry check ===" && \
+    poetry check || true
+
 # 依存関係のインストール（システム環境に直接）
-# エラー時の詳細を表示するために--verboseを追加
-RUN poetry config virtualenvs.create false && \
-    poetry install --only=main --no-root --no-interaction --verbose && \
-    rm -rf $POETRY_CACHE_DIR
+# エラーを無視せずに各ステップを個別に実行
+RUN poetry config virtualenvs.create false
+
+# mainグループのみをインストール（オプショナルグループを除外）
+RUN poetry install --only=main --no-root --no-interaction -vvv || \
+    (echo "=== Poetry install failed. Showing dependencies ===" && \
+     poetry show --tree || true && \
+     echo "=== Trying without lock file ===" && \
+     poetry install --only=main --no-root --no-interaction --no-ansi || exit 1)
+
+# キャッシュディレクトリのクリーンアップ
+RUN rm -rf $POETRY_CACHE_DIR
 
 # アプリケーションコードのコピー
 COPY app/ ./app/
