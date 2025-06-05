@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { Camera, Upload, ArrowLeft, FileDown, BarChart } from 'lucide-react';
+import { Camera, Upload, ArrowLeft, FileDown, BarChart, AlertCircle, CheckCircle } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card } from './components/ui/card';
 import { Progress } from './components/ui/progress';
-// import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Alert, AlertDescription } from './components/ui/alert';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend } from 'recharts';
-import { uploadReceipt, getReceipts, exportReceipts, testUploadReceipt } from './api';
+import { uploadReceipt, getReceipts, exportReceipts, testUploadReceipt, healthCheck, getApiStatus } from './api';
 import { ReceiptData } from './types';
 import './App.css';
 
@@ -16,21 +15,63 @@ function App() {
   const [view, setView] = useState<'home' | 'processing' | 'review' | 'list' | 'chart'>('home');
   const [receipts, setReceipts] = useState<ReceiptData[]>([]);
   const [currentReceipt, setCurrentReceipt] = useState<ReceiptData | null>(null);
-  const [_, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [backendStatus, setBackendStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // バックエンドのヘルスチェック
+  useEffect(() => {
+    const checkBackendHealth = async () => {
+      try {
+        const isHealthy = await healthCheck();
+        setBackendStatus(isHealthy ? 'online' : 'offline');
+        
+        if (isHealthy) {
+          // APIステータスも確認
+          const status = await getApiStatus();
+          console.log('API Status:', status);
+        }
+      } catch (error) {
+        console.error('Health check failed:', error);
+        setBackendStatus('offline');
+      }
+    };
+
+    checkBackendHealth();
+    
+    // 30秒ごとにヘルスチェック
+    const interval = setInterval(checkBackendHealth, 30000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // レシート一覧の取得
   useEffect(() => {
     const fetchReceipts = async () => {
-      const data = await getReceipts();
-      setReceipts(data.receipts);
+      if (backendStatus === 'online') {
+        try {
+          const data = await getReceipts();
+          if (data.success !== false) {
+            setReceipts(data.receipts || []);
+          }
+        } catch (error) {
+          console.error('Failed to fetch receipts:', error);
+          setMessage({ text: 'レシート一覧の取得に失敗しました。', type: 'error' });
+        }
+      }
     };
     
     fetchReceipts();
-  }, []);
+  }, [backendStatus]);
 
   const handleFileUpload = async (file: File) => {
+    if (backendStatus !== 'online') {
+      setMessage({ text: 'バックエンドサーバーがオフラインです。しばらく待ってから再試行してください。', type: 'error' });
+      return;
+    }
+
     setView('processing');
     setLoading(true);
     setProgress(0);
@@ -59,7 +100,7 @@ function App() {
           setLoading(false);
         }, 500);
       } else {
-        setMessage({ text: response.message, type: 'error' });
+        setMessage({ text: response.message || 'レシート処理に失敗しました。', type: 'error' });
         setTimeout(() => {
           setView('home');
           setLoading(false);
@@ -67,15 +108,27 @@ function App() {
       }
     } catch (error) {
       clearInterval(interval);
-      setMessage({ text: 'エラーが発生しました。再度お試しください。', type: 'error' });
+      console.error('Upload error:', error);
+      
+      let errorMessage = 'エラーが発生しました。';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      
+      setMessage({ text: errorMessage, type: 'error' });
       setTimeout(() => {
         setView('home');
         setLoading(false);
-      }, 2000);
+      }, 3000);
     }
   };
 
   const handleTestUpload = async () => {
+    if (backendStatus !== 'online') {
+      setMessage({ text: 'バックエンドサーバーがオフラインです。', type: 'error' });
+      return;
+    }
+
     setView('processing');
     setLoading(true);
     setProgress(0);
@@ -104,7 +157,7 @@ function App() {
           setLoading(false);
         }, 500);
       } else {
-        setMessage({ text: response.message, type: 'error' });
+        setMessage({ text: response.message || 'テストレシート作成に失敗しました。', type: 'error' });
         setTimeout(() => {
           setView('home');
           setLoading(false);
@@ -112,7 +165,14 @@ function App() {
       }
     } catch (error) {
       clearInterval(interval);
-      setMessage({ text: 'エラーが発生しました。再度お試しください。', type: 'error' });
+      console.error('Test upload error:', error);
+      
+      let errorMessage = 'テストレシート作成中にエラーが発生しました。';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      
+      setMessage({ text: errorMessage, type: 'error' });
       setTimeout(() => {
         setView('home');
         setLoading(false);
@@ -158,6 +218,7 @@ function App() {
       setTimeout(() => setMessage(null), 3000);
     } catch (error) {
       setLoading(false);
+      console.error('Export error:', error);
       setMessage({ text: 'CSVエクスポート中にエラーが発生しました。', type: 'error' });
       setTimeout(() => setMessage(null), 3000);
     }
@@ -174,14 +235,42 @@ function App() {
     return Object.entries(categories).map(([name, value]) => ({ name, value }));
   };
 
+  // サーバー状態表示コンポーネント
+  const ServerStatusIndicator = () => (
+    <div className="fixed top-4 right-4 z-50">
+      <div className={`flex items-center gap-2 px-3 py-2 rounded-full text-sm font-medium ${
+        backendStatus === 'online' 
+          ? 'bg-green-100 text-green-800' 
+          : backendStatus === 'offline'
+          ? 'bg-red-100 text-red-800'
+          : 'bg-gray-100 text-gray-800'
+      }`}>
+        {backendStatus === 'online' && <CheckCircle className="h-4 w-4" />}
+        {backendStatus === 'offline' && <AlertCircle className="h-4 w-4" />}
+        {backendStatus === 'unknown' && <div className="h-4 w-4 rounded-full bg-gray-400 animate-pulse" />}
+        {backendStatus === 'online' ? 'オンライン' : backendStatus === 'offline' ? 'オフライン' : '確認中'}
+      </div>
+    </div>
+  );
+
   const HomeView = () => (
     <div className="flex flex-col items-center justify-center h-full gap-6">
       <h1 className="text-2xl font-bold text-gray-800">レシートスキャナー</h1>
       
+      {backendStatus === 'offline' && (
+        <Alert className="w-full max-w-sm bg-red-50 border-red-200">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-red-800">
+            バックエンドサーバーに接続できません。しばらく待ってから再試行してください。
+          </AlertDescription>
+        </Alert>
+      )}
+      
       <div className="flex flex-col gap-4 w-full max-w-xs">
         <Button 
-          className="h-16 text-lg bg-blue-600 hover:bg-blue-700"
+          className="h-16 text-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
           onClick={() => fileInputRef.current?.click()}
+          disabled={backendStatus !== 'online'}
         >
           <Camera className="mr-2 h-6 w-6" />
           レシートを撮影
@@ -189,8 +278,9 @@ function App() {
         
         <Button 
           variant="outline" 
-          className="h-12 text-base"
+          className="h-12 text-base disabled:opacity-50"
           onClick={() => fileInputRef.current?.click()}
+          disabled={backendStatus !== 'online'}
         >
           <Upload className="mr-2 h-5 w-5" />
           画像を選択
@@ -219,8 +309,9 @@ function App() {
         {/* 開発用テストボタン */}
         <Button 
           variant="ghost" 
-          className="mt-4 text-sm text-gray-500"
+          className="mt-4 text-sm text-gray-500 disabled:opacity-50"
           onClick={handleTestUpload}
+          disabled={backendStatus !== 'online'}
         >
           テストレシート追加
         </Button>
@@ -230,7 +321,7 @@ function App() {
         type="file"
         ref={fileInputRef}
         className="hidden"
-        accept="image/jpeg,image/png"
+        accept="image/jpeg,image/png,image/jpg"
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) {
@@ -246,6 +337,11 @@ function App() {
       <h2 className="text-xl font-semibold text-gray-800">処理中...</h2>
       <Progress value={progress} className="w-full max-w-xs" />
       <p className="text-gray-600">レシートから情報を抽出しています</p>
+      {progress > 50 && (
+        <p className="text-sm text-gray-500">
+          {progress > 80 ? 'AI処理中...' : 'OCR処理中...'}
+        </p>
+      )}
     </div>
   );
 
@@ -448,6 +544,8 @@ function App() {
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col">
+      <ServerStatusIndicator />
+      
       {view === 'home' && <HomeView />}
       {view === 'processing' && <ProcessingView />}
       {view === 'review' && <ReviewView />}
