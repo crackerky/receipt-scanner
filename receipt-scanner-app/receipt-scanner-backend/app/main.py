@@ -31,13 +31,33 @@ app = FastAPI(
     debug=settings.debug
 )
 
+# 開発環境用の追加CORS設定
+development_origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",  # Vite default port
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "https://localhost:3000",
+    "https://localhost:5173",
+]
+
 # Configure CORS with secure settings
+allowed_origins = settings.allowed_origins.copy()
+if settings.is_development:
+    allowed_origins.extend(development_origins)
+
+# 重複を削除
+allowed_origins = list(set(allowed_origins))
+
+logger.info(f"CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Initialize components
@@ -101,6 +121,21 @@ async def security_headers(request: Request, call_next):
     
     return response
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all requests for debugging."""
+    start_time = time.time()
+    
+    logger.info(f"Request: {request.method} {request.url}")
+    logger.info(f"Headers: {dict(request.headers)}")
+    
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    logger.info(f"Response: {response.status_code} - {process_time:.3f}s")
+    
+    return response
+
 @app.get("/healthz")
 async def health_check():
     """Health check endpoint."""
@@ -108,7 +143,8 @@ async def health_check():
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat(),
         "environment": settings.environment,
-        "openai_available": settings.openai_available
+        "openai_available": settings.openai_available,
+        "cors_origins": allowed_origins[:3] if len(allowed_origins) > 3 else allowed_origins,  # セキュリティのため一部のみ表示
     }
 
 @app.get("/api/status")
@@ -125,7 +161,9 @@ async def api_status():
         "limits": {
             "max_requests_per_minute": settings.rate_limit_requests,
             "max_file_size_mb": 10
-        }
+        },
+        "cors_enabled": True,
+        "allowed_origins_count": len(allowed_origins)
     }
 
 @app.post("/api/receipts/upload", response_model=ReceiptResponse)
@@ -133,8 +171,12 @@ async def api_status():
 async def upload_receipt(request: Request, file: UploadFile = File(...)):
     """Upload and process a receipt image with security validation."""
     
+    logger.info(f"Upload request from: {request.client.host}")
+    logger.info(f"File info: name={file.filename}, content_type={file.content_type}, size={file.size if hasattr(file, 'size') else 'unknown'}")
+    
     # Validate file
     if not file.filename:
+        logger.warning("No filename provided")
         return JSONResponse(
             status_code=400,
             content={
@@ -148,6 +190,7 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
     allowed_extensions = [".jpg", ".jpeg", ".png"]
     file_ext = file.filename.split(".")[-1].lower()
     if f".{file_ext}" not in allowed_extensions:
+        logger.warning(f"Unsupported file extension: {file_ext}")
         return JSONResponse(
             status_code=400,
             content={
@@ -159,7 +202,10 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
     
     # Check file size (10MB limit)
     content = await file.read()
+    logger.info(f"File content size: {len(content)} bytes")
+    
     if len(content) > 10 * 1024 * 1024:
+        logger.warning(f"File too large: {len(content)} bytes")
         return JSONResponse(
             status_code=400,
             content={
@@ -171,7 +217,9 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
     
     try:
         # Process the image
+        logger.info("Starting image processing...")
         result = receipt_processor.process_image(content)
+        logger.info(f"Processing result: {result['success']}")
         
         if result["success"]:
             # Add unique ID and timestamp
@@ -184,17 +232,20 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             receipts_db.append(receipt_data)
             
             logger.info(f"Successfully processed receipt {receipt_data['id']}")
+        else:
+            logger.warning(f"Processing failed: {result['message']}")
         
         return result
         
     except Exception as e:
-        logger.error(f"Error processing receipt: {e}")
+        logger.error(f"Error processing receipt: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
                 "message": "画像処理中にサーバーエラーが発生しました。しばらく時間をおいて再度お試しください。",
-                "data": None
+                "data": None,
+                "error_details": str(e) if settings.debug else None
             }
         )
 
@@ -215,6 +266,8 @@ async def test_receipt_upload():
         }
         
         receipts_db.append(receipt_data)
+        
+        logger.info(f"Created test receipt {receipt_data['id']}")
         
         return {
             "success": True,
@@ -243,6 +296,8 @@ async def get_receipts():
             key=lambda x: x.get("created_at", ""), 
             reverse=True
         )
+        
+        logger.info(f"Retrieved {len(sorted_receipts)} receipts")
         
         return {"receipts": sorted_receipts}
         
@@ -446,6 +501,7 @@ async def get_statistics():
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Custom HTTP exception handler."""
+    logger.warning(f"HTTP Exception: {exc.status_code} - {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -458,13 +514,14 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """General exception handler for unhandled errors."""
-    logger.error(f"Unhandled exception: {exc}")
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
         content={
             "success": False,
             "message": "予期しないエラーが発生しました。しばらく時間をおいて再度お試しください。",
-            "data": None
+            "data": None,
+            "error_details": str(exc) if settings.debug else None
         }
     )
 
@@ -475,7 +532,7 @@ async def startup_event():
     logger.info(f"Receipt Scanner API starting up in {settings.environment} mode")
     logger.info(f"OpenAI API available: {settings.openai_available}")
     logger.info(f"Debug mode: {settings.debug}")
-    logger.info(f"Allowed origins: {settings.allowed_origins}")
+    logger.info(f"Allowed origins: {allowed_origins}")
 
 # Shutdown event
 @app.on_event("shutdown")
