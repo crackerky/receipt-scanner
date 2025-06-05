@@ -15,6 +15,12 @@ pytesseract = "^0.3.13"
 langchain-openai = "^0.3.16"
 python-dotenv = "^1.1.0"
 langchain = "^0.3.25"
+
+# Optional dependencies for advanced image processing
+[tool.poetry.group.cv]
+optional = true
+
+[tool.poetry.group.cv.dependencies]
 opencv-python = "^4.9.0.80"
 numpy = "^1.26.4"
 
