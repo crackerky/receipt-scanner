@@ -12,17 +12,15 @@
   # Node.js バージョン指定
   NODE_VERSION = "18"
   
-  # Railway デプロイ後のURLに実際のURLを設定してください
-  # 例：VITE_API_URL = "https://receipt-scanner-backend-production.up.railway.app"
-  VITE_API_URL = "https://your-railway-url-here.up.railway.app"
+  # Railway本番URLを設定
+  VITE_API_URL = "https://receipt-scanner-production.up.railway.app"
 
 # フロントエンド用の環境変数
 [context.production.environment]
-  # Netlify環境変数で上書き可能
-  VITE_API_URL = "https://your-railway-url-here.up.railway.app"
+  VITE_API_URL = "https://receipt-scanner-production.up.railway.app"
 
 [context.deploy-preview.environment]
-  VITE_API_URL = "https://your-railway-url-here.up.railway.app"
+  VITE_API_URL = "https://receipt-scanner-production.up.railway.app"
 
 # リダイレクト設定（SPA用）
 [[redirects]]
@@ -38,8 +36,7 @@
     X-XSS-Protection = "1; mode=block"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
-    # 実際のRailway URLに置き換えてください
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://your-railway-url-here.up.railway.app https://api.openai.com"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://receipt-scanner-production.up.railway.app https://api.openai.com"
 
 # キャッシュ設定
 [[headers]]
