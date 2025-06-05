@@ -31,11 +31,14 @@ ENV POETRY_NO_INTERACTION=1 \
     POETRY_CACHE_DIR=/tmp/poetry_cache
 
 # 依存関係ファイルのコピー
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml ./
+# poetry.lockがない場合でも動作するように条件付きコピー
+COPY poetry.loc[k] ./
 
 # 依存関係のインストール（システム環境に直接）
+# poetry.lockがない場合は自動生成
 RUN poetry config virtualenvs.create false \
-    && poetry install --only=main --no-root \
+    && poetry install --only=main --no-root --no-interaction \
     && rm -rf $POETRY_CACHE_DIR
 
 # アプリケーションコードのコピー
