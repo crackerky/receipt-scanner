@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { Camera, Upload, ArrowLeft, FileDown, BarChart, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
+import { Camera, Upload, ArrowLeft, FileDown, BarChart, AlertCircle, CheckCircle, Loader2, Trash2, Edit2 } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card } from './components/ui/card';
 import { Progress } from './components/ui/progress';
 import { Alert, AlertDescription } from './components/ui/alert';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend } from 'recharts';
-import { uploadReceipt, getReceipts, exportReceipts, testUploadReceipt, healthCheck, getApiStatus } from './api';
+import { uploadReceipt, getReceipts, exportReceipts, testUploadReceipt, healthCheck, getApiStatus, deleteReceipt, updateReceipt } from './api';
 import { ReceiptData } from './types';
 import './App.css';
 
@@ -16,9 +16,11 @@ function App() {
   const [receipts, setReceipts] = useState<ReceiptData[]>([]);
   const [currentReceipt, setCurrentReceipt] = useState<ReceiptData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState<number | null>(null);
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [backendStatus, setBackendStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
+  const [editingReceipt, setEditingReceipt] = useState<ReceiptData | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // バックエンドのヘルスチェック
@@ -48,21 +50,23 @@ function App() {
   }, []);
 
   // レシート一覧の取得
-  useEffect(() => {
-    const fetchReceipts = async () => {
-      if (backendStatus === 'online') {
-        try {
-          const data = await getReceipts();
-          if (data.success !== false) {
-            setReceipts(data.data || []);
-          }
-        } catch (error) {
-          console.error('Failed to fetch receipts:', error);
-          setMessage({ text: 'レシート一覧の取得に失敗しました。', type: 'error' });
+  const fetchReceipts = async () => {
+    if (backendStatus === 'online') {
+      try {
+        const response = await getReceipts();
+        if (response.data && 'receipts' in response.data) {
+          setReceipts(response.data.receipts || []);
+        } else if (Array.isArray(response.data)) {
+          setReceipts(response.data);
         }
+      } catch (error) {
+        console.error('Failed to fetch receipts:', error);
+        setMessage({ text: 'レシート一覧の取得に失敗しました。', type: 'error' });
       }
-    };
-    
+    }
+  };
+
+  useEffect(() => {
     fetchReceipts();
   }, [backendStatus]);
 
@@ -95,6 +99,15 @@ function App() {
       if (response.success && response.data) {
         setCurrentReceipt(response.data);
         setMessage({ text: response.message, type: 'success' });
+        
+        // 日付が自動補完された場合のメッセージを表示
+        if (response.message.includes('日付は現在の日付で補完しました')) {
+          setMessage({ 
+            text: 'レシートから日付を読み取れなかったため、本日の日付を設定しました。必要に応じて修正してください。', 
+            type: 'info' 
+          });
+        }
+        
         setTimeout(() => {
           setView('review');
           setIsLoading(false);
@@ -180,14 +193,40 @@ function App() {
     }
   };
 
-  const handleSaveReceipt = () => {
+  const handleSaveReceipt = async () => {
     if (currentReceipt) {
-      setReceipts((prev) => [currentReceipt, ...prev]);
-      setMessage({ text: 'レシート情報を保存しました。', type: 'success' });
-      setTimeout(() => {
-        setView('list');
-        setMessage(null);
-      }, 1000);
+      // 編集モードの場合は更新
+      if (editingReceipt && editingReceipt.id) {
+        try {
+          setIsLoading(true);
+          const response = await updateReceipt(editingReceipt.id, currentReceipt);
+          
+          if (response.success) {
+            await fetchReceipts();
+            setMessage({ text: 'レシート情報を更新しました。', type: 'success' });
+            setEditingReceipt(null);
+            setTimeout(() => {
+              setView('list');
+              setMessage(null);
+            }, 1000);
+          } else {
+            setMessage({ text: 'レシートの更新に失敗しました。', type: 'error' });
+          }
+        } catch (error) {
+          console.error('Update error:', error);
+          setMessage({ text: 'レシートの更新中にエラーが発生しました。', type: 'error' });
+        } finally {
+          setIsLoading(false);
+        }
+      } else {
+        // 新規作成の場合
+        await fetchReceipts();
+        setMessage({ text: 'レシート情報を保存しました。', type: 'success' });
+        setTimeout(() => {
+          setView('list');
+          setMessage(null);
+        }, 1000);
+      }
     }
   };
 
@@ -195,6 +234,34 @@ function App() {
     if (currentReceipt) {
       setCurrentReceipt({ ...currentReceipt, [field]: value });
     }
+  };
+
+  const handleDeleteReceipt = async (receiptId: number) => {
+    if (confirm('このレシートを削除してもよろしいですか？')) {
+      try {
+        setIsDeleting(receiptId);
+        const response = await deleteReceipt(receiptId);
+        
+        if (response.success) {
+          await fetchReceipts();
+          setMessage({ text: 'レシートを削除しました。', type: 'success' });
+          setTimeout(() => setMessage(null), 3000);
+        } else {
+          setMessage({ text: 'レシートの削除に失敗しました。', type: 'error' });
+        }
+      } catch (error) {
+        console.error('Delete error:', error);
+        setMessage({ text: 'レシートの削除中にエラーが発生しました。', type: 'error' });
+      } finally {
+        setIsDeleting(null);
+      }
+    }
+  };
+
+  const handleEditReceipt = (receipt: ReceiptData) => {
+    setCurrentReceipt(receipt);
+    setEditingReceipt(receipt);
+    setView('review');
   };
 
   const handleExportCSV = async () => {
@@ -364,17 +431,32 @@ function App() {
     return (
       <div className="flex flex-col h-full">
         <div className="flex items-center p-4 border-b">
-          <Button variant="ghost" size="icon" onClick={() => setView('home')} disabled={isLoading}>
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={() => {
+              setView('home');
+              setEditingReceipt(null);
+            }} 
+            disabled={isLoading}
+          >
             <ArrowLeft className="h-5 w-5" />
           </Button>
-          <h2 className="text-lg font-semibold ml-2">レシート情報の確認</h2>
+          <h2 className="text-lg font-semibold ml-2">
+            {editingReceipt ? 'レシート情報の編集' : 'レシート情報の確認'}
+          </h2>
         </div>
         
         <div className="flex-1 overflow-auto p-4">
           <Card className="p-4">
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">日付</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  日付
+                  {currentReceipt.date === new Date().toISOString().split('T')[0] && (
+                    <span className="text-xs text-blue-600 ml-2">(自動補完)</span>
+                  )}
+                </label>
                 <input
                   type="date"
                   className="w-full p-2 border rounded-md"
@@ -434,6 +516,12 @@ function App() {
                   <option value="その他">その他</option>
                 </select>
               </div>
+              
+              {currentReceipt.created_at && (
+                <div className="text-xs text-gray-500">
+                  アップロード日時: {new Date(currentReceipt.created_at).toLocaleString('ja-JP')}
+                </div>
+              )}
             </div>
           </Card>
         </div>
@@ -447,10 +535,10 @@ function App() {
             {isLoading ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                保存中...
+                {editingReceipt ? '更新中...' : '保存中...'}
               </>
             ) : (
-              '保存する'
+              editingReceipt ? '更新する' : '保存する'
             )}
           </Button>
         </div>
@@ -488,17 +576,41 @@ function App() {
           </div>
         ) : (
           <div className="divide-y">
-            {receipts.map((receipt, index) => (
-              <div key={index} className="p-4 hover:bg-gray-50">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="font-medium">{receipt.store_name}</p>
-                    <p className="text-sm text-gray-500">{receipt.date}</p>
+            {receipts.map((receipt) => (
+              <div key={receipt.id} className="p-4 hover:bg-gray-50 flex items-center">
+                <div className="flex-1">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="font-medium">{receipt.store_name}</p>
+                      <p className="text-sm text-gray-500">{receipt.date}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-semibold">¥{receipt.total_amount.toLocaleString()}</p>
+                      <p className="text-xs text-gray-500">{receipt.expense_category || '未分類'}</p>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <p className="font-semibold">¥{receipt.total_amount.toLocaleString()}</p>
-                    <p className="text-xs text-gray-500">{receipt.expense_category || '未分類'}</p>
-                  </div>
+                </div>
+                <div className="flex gap-2 ml-4">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleEditReceipt(receipt)}
+                    disabled={isLoading || isDeleting === receipt.id}
+                  >
+                    <Edit2 className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => receipt.id && handleDeleteReceipt(receipt.id)}
+                    disabled={isLoading || isDeleting === receipt.id}
+                  >
+                    {isDeleting === receipt.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4 text-red-500" />
+                    )}
+                  </Button>
                 </div>
               </div>
             ))}
