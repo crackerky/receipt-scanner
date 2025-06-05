@@ -12,15 +12,16 @@
   # Node.js バージョン指定
   NODE_VERSION = "18"
   
-  # 本番環境用API URL（GitHub Secretsから設定）
-  VITE_API_URL = "https://your-backend-api-url.com"
+  # 開発環境用（ローカルAPI）
+  VITE_API_URL = "http://localhost:8000"
 
 # フロントエンド用の環境変数
 [context.production.environment]
-  VITE_API_URL = "https://your-production-api-url.com"
+  # 本番環境用（Netlifyの環境変数で上書き可能）
+  VITE_API_URL = ""
 
 [context.deploy-preview.environment]
-  VITE_API_URL = "https://your-staging-api-url.com"
+  VITE_API_URL = "http://localhost:8000"
 
 # リダイレクト設定（SPA用）
 [[redirects]]
@@ -36,7 +37,7 @@
     X-XSS-Protection = "1; mode=block"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.openai.com https://your-api-domain.com https://your-backend-api-url.com https://your-production-api-url.com https://your-staging-api-url.com https://localhost:8000"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://localhost:8000 https://api.openai.com"
 
 # キャッシュ設定
 [[headers]]
