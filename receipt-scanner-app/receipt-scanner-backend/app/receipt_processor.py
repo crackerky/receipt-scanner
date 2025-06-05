@@ -3,6 +3,8 @@ import io
 import re
 import json
 import logging
+import platform
+import subprocess
 from datetime import datetime
 from PIL import Image
 import pytesseract
@@ -14,6 +16,52 @@ from app.config import settings
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Tesseractのパスを自動検出して設定
+def setup_tesseract():
+    """Tesseractの実行パスを設定"""
+    system = platform.system()
+    
+    # Windowsの場合
+    if system == "Windows":
+        possible_paths = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            r"C:\tesseract\tesseract.exe"
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                pytesseract.pytesseract.tesseract_cmd = path
+                logger.info(f"Tesseract found at: {path}")
+                return True
+    
+    # macOSの場合
+    elif system == "Darwin":
+        possible_paths = [
+            "/usr/local/bin/tesseract",
+            "/opt/homebrew/bin/tesseract",
+            "/usr/bin/tesseract"
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                pytesseract.pytesseract.tesseract_cmd = path
+                logger.info(f"Tesseract found at: {path}")
+                return True
+    
+    # Linuxまたはその他の場合、デフォルトパスを試す
+    try:
+        # tesseractコマンドが使えるか確認
+        result = subprocess.run(['tesseract', '--version'], capture_output=True, text=True)
+        if result.returncode == 0:
+            logger.info(f"Tesseract version: {result.stdout.split()[1]}")
+            return True
+    except Exception as e:
+        logger.error(f"Tesseract not found in PATH: {e}")
+    
+    return False
+
+# Tesseractのセットアップ
+tesseract_available = setup_tesseract()
 
 # Date patterns for Japanese receipts
 DATE_PATTERNS = [
@@ -45,6 +93,10 @@ class ReceiptProcessor:
     def __init__(self):
         """Initialize the receipt processor with secure configuration."""
         self.openai_available = settings.openai_available
+        self.tesseract_available = tesseract_available
+        
+        if not self.tesseract_available:
+            logger.error("Tesseract OCR is not available. Please install Tesseract OCR.")
         
         if self.openai_available:
             try:
@@ -65,6 +117,25 @@ class ReceiptProcessor:
         # Configure Tesseract if custom path is provided
         if settings.tessdata_prefix:
             os.environ['TESSDATA_PREFIX'] = settings.tessdata_prefix
+        
+        # Tesseractの言語データを確認
+        self._check_tesseract_languages()
+    
+    def _check_tesseract_languages(self):
+        """Tesseractで利用可能な言語を確認"""
+        if not self.tesseract_available:
+            return
+        
+        try:
+            langs = pytesseract.get_languages(config='')
+            logger.info(f"Available Tesseract languages: {langs}")
+            
+            if 'jpn' not in langs:
+                logger.warning("Japanese language data (jpn) not found in Tesseract. Japanese text recognition may not work.")
+            if 'eng' not in langs:
+                logger.warning("English language data (eng) not found in Tesseract.")
+        except Exception as e:
+            logger.error(f"Failed to get Tesseract languages: {e}")
     
     def _create_prompt_template(self) -> ChatPromptTemplate:
         """Create a secure prompt template for OpenAI."""
@@ -102,13 +173,23 @@ class ReceiptProcessor:
                     "data": None
                 }
             
+            # Tesseractが利用できない場合のエラー
+            if not self.tesseract_available:
+                return {
+                    "success": False,
+                    "message": "OCRエンジンが利用できません。Tesseract OCRをインストールしてください。",
+                    "data": None
+                }
+            
             # Open and preprocess image
             image = Image.open(io.BytesIO(image_bytes))
             image = self._preprocess_image(image)
             
             # Extract text using OCR
+            logger.info("Starting OCR processing...")
             text = pytesseract.image_to_string(image, lang='jpn+eng')
-            logger.info(f"OCR extracted text length: {len(text)}")
+            logger.info(f"OCR extracted text (first 200 chars): {text[:200]}...")
+            logger.debug(f"Full OCR text: {text}")
             
             # Process text based on available services
             if self.openai_available:
@@ -119,10 +200,17 @@ class ReceiptProcessor:
             else:
                 result = self._extract_with_regex(text)
             
+            # 日付が抽出できなかった場合、現在の日時を使用
+            if result["success"] and result["data"]:
+                if not result["data"].get("date"):
+                    result["data"]["date"] = datetime.now().strftime("%Y-%m-%d")
+                    result["message"] += " 日付は現在の日付で補完しました。"
+                    logger.info("Date not found in receipt, using current date")
+            
             return result
             
         except Exception as e:
-            logger.error(f"Error processing image: {e}")
+            logger.error(f"Error processing image: {e}", exc_info=True)
             return {
                 "success": False,
                 "message": f"画像処理中にエラーが発生しました: {str(e)}",
