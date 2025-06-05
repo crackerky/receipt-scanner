@@ -1,0 +1,8 @@
+# フロントエンドディレクトリを除外
+receipt-scanner-app/receipt-scanner-frontend/
+*.md
+.git/
+.github/
+supabase/
+netlify.toml
+.gitignore
