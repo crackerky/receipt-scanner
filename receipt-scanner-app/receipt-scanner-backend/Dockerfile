@@ -1,68 +1,58 @@
-# Multi-stage build for security and efficiency
-FROM python:3.12-slim as builder
+# Railway対応のシンプルなDockerfile
+FROM python:3.12-slim
 
-# Install system dependencies for building
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Poetry
-RUN pip install poetry
-
-# Set poetry configuration
-ENV POETRY_NO_INTERACTION=1 \
-    POETRY_VENV_IN_PROJECT=1 \
-    POETRY_CACHE_DIR=/tmp/poetry_cache
-
-# Copy dependency files
-WORKDIR /app
-COPY pyproject.toml poetry.lock ./
-
-# Install dependencies
-RUN poetry install --only=main --no-root && rm -rf $POETRY_CACHE_DIR
-
-# Production image
-FROM python:3.12-slim as production
-
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
-
-# Install runtime dependencies
+# システム依存関係のインストール
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-jpn \
     tesseract-ocr-eng \
+    build-essential \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# 作業ディレクトリの設定
 WORKDIR /app
 
-# Copy virtual environment from builder stage
-COPY --from=builder /app/.venv /app/.venv
+# Poetry のインストール
+RUN pip install poetry
 
-# Copy application code
+# Poetry 設定（仮想環境を作成しない）
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VENV_IN_PROJECT=false \
+    POETRY_CACHE_DIR=/tmp/poetry_cache
+
+# 依存関係ファイルのコピー
+COPY pyproject.toml poetry.lock ./
+
+# 依存関係のインストール（システム環境に直接）
+RUN poetry config virtualenvs.create false \
+    && poetry install --only=main --no-root \
+    && rm -rf $POETRY_CACHE_DIR
+
+# アプリケーションコードのコピー
 COPY app/ ./app/
 
-# Create directory for uploaded files with proper permissions
+# 非rootユーザーの作成
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# アップロードディレクトリの作成
 RUN mkdir -p /app/uploads && chown -R appuser:appuser /app
 
-# Switch to non-root user
+# 非rootユーザーに切り替え
 USER appuser
 
-# Set environment variables
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH=/app \
+# 環境変数
+ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     ENVIRONMENT=production
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/healthz')" || exit 1
-
-# Expose port
+# ポート公開
 EXPOSE 8000
 
-# Start application
+# ヘルスチェック
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/healthz', timeout=10)" || exit 1
+
+# アプリケーション起動
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
