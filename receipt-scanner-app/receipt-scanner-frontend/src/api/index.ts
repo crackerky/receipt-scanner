@@ -9,6 +9,10 @@ interface ApiResponse<T = any> {
   data: T | null;
 }
 
+interface ExportResponse {
+  csv_data: string;
+}
+
 class ApiError extends Error {
   constructor(public status: number, public data: any) {
     super(`API Error: ${status}`);
@@ -90,8 +94,19 @@ export async function getReceipts(): Promise<ApiResponse> {
 }
 
 export async function exportReceipts(): Promise<string> {
-  const response = await apiRequest(`${API_URL}/api/receipts/export`);
-  return response.data?.csv_data || response.csv_data || '';
+  const response = await apiRequest<ExportResponse>(`${API_URL}/api/receipts/export`);
+  
+  // Properly access csv_data from the response
+  if (response.data && 'csv_data' in response.data) {
+    return response.data.csv_data;
+  }
+  
+  // Fallback for backward compatibility
+  if (response.data && typeof response.data === 'string') {
+    return response.data;
+  }
+  
+  return '';
 }
 
 export async function testUploadReceipt(): Promise<ApiResponse> {

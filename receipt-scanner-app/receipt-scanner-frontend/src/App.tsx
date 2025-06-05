@@ -15,7 +15,7 @@ function App() {
   const [view, setView] = useState<'home' | 'processing' | 'review' | 'list' | 'chart'>('home');
   const [receipts, setReceipts] = useState<ReceiptData[]>([]);
   const [currentReceipt, setCurrentReceipt] = useState<ReceiptData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [backendStatus, setBackendStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
@@ -54,7 +54,7 @@ function App() {
         try {
           const data = await getReceipts();
           if (data.success !== false) {
-            setReceipts(data.receipts || []);
+            setReceipts(data.data || []);
           }
         } catch (error) {
           console.error('Failed to fetch receipts:', error);
@@ -73,7 +73,7 @@ function App() {
     }
 
     setView('processing');
-    setLoading(true);
+    setIsLoading(true);
     setProgress(0);
     setMessage({ text: 'レシートを処理中...', type: 'info' });
 
@@ -97,13 +97,13 @@ function App() {
         setMessage({ text: response.message, type: 'success' });
         setTimeout(() => {
           setView('review');
-          setLoading(false);
+          setIsLoading(false);
         }, 500);
       } else {
         setMessage({ text: response.message || 'レシート処理に失敗しました。', type: 'error' });
         setTimeout(() => {
           setView('home');
-          setLoading(false);
+          setIsLoading(false);
         }, 2000);
       }
     } catch (error) {
@@ -118,7 +118,7 @@ function App() {
       setMessage({ text: errorMessage, type: 'error' });
       setTimeout(() => {
         setView('home');
-        setLoading(false);
+        setIsLoading(false);
       }, 3000);
     }
   };
@@ -130,7 +130,7 @@ function App() {
     }
 
     setView('processing');
-    setLoading(true);
+    setIsLoading(true);
     setProgress(0);
     setMessage({ text: 'テストレシートを処理中...', type: 'info' });
 
@@ -154,13 +154,13 @@ function App() {
         setMessage({ text: response.message, type: 'success' });
         setTimeout(() => {
           setView('review');
-          setLoading(false);
+          setIsLoading(false);
         }, 500);
       } else {
         setMessage({ text: response.message || 'テストレシート作成に失敗しました。', type: 'error' });
         setTimeout(() => {
           setView('home');
-          setLoading(false);
+          setIsLoading(false);
         }, 2000);
       }
     } catch (error) {
@@ -175,7 +175,7 @@ function App() {
       setMessage({ text: errorMessage, type: 'error' });
       setTimeout(() => {
         setView('home');
-        setLoading(false);
+        setIsLoading(false);
       }, 2000);
     }
   };
@@ -199,7 +199,7 @@ function App() {
 
   const handleExportCSV = async () => {
     try {
-      setLoading(true);
+      setIsLoading(true);
       setMessage({ text: 'CSVファイルを作成中...', type: 'info' });
       
       const csvData = await exportReceipts();
@@ -213,11 +213,11 @@ function App() {
       link.click();
       document.body.removeChild(link);
       
-      setLoading(false);
+      setIsLoading(false);
       setMessage({ text: 'CSVファイルをエクスポートしました。', type: 'success' });
       setTimeout(() => setMessage(null), 3000);
     } catch (error) {
-      setLoading(false);
+      setIsLoading(false);
       console.error('Export error:', error);
       setMessage({ text: 'CSVエクスポート中にエラーが発生しました。', type: 'error' });
       setTimeout(() => setMessage(null), 3000);

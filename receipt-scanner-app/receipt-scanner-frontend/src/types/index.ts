@@ -14,6 +14,26 @@ export interface ReceiptResponse {
   data?: ReceiptData | null;
 }
 
+export interface ReceiptListResponse {
+  success: boolean;
+  message: string;
+  data?: ReceiptData[] | null;
+}
+
+export interface ExportResponse {
+  success: boolean;
+  message: string;
+  data?: {
+    csv_data: string;
+  } | null;
+}
+
+export interface ApiResponse<T = any> {
+  success: boolean;
+  message: string;
+  data: T | null;
+}
+
 export interface ReceiptList {
   receipts: ReceiptData[];
 }
