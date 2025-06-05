@@ -6,11 +6,13 @@ import logging
 import platform
 import subprocess
 from datetime import datetime
-from PIL import Image
+from PIL import Image, ImageFilter, ImageEnhance
 import pytesseract
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from typing import Dict, Any, Optional, Tuple
+import cv2
+import numpy as np
 
 from app.config import settings
 
@@ -162,6 +164,79 @@ class ReceiptProcessor:
             """
         )
     
+    def _preprocess_image_advanced(self, image: Image.Image) -> Image.Image:
+        """画像の前処理を実施（記事を参考に実装）"""
+        try:
+            # PIL ImageをOpenCV形式に変換
+            img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            
+            # グレースケール変換
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            
+            # ノイズ除去
+            denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+            
+            # コントラスト調整（CLAHE）
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(denoised)
+            
+            # 二値化（大津の手法）
+            _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # モルフォロジー変換でノイズを除去
+            kernel = np.ones((1,1), np.uint8)
+            cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+            
+            # 傾き補正
+            coords = np.column_stack(np.where(cleaned > 0))
+            angle = cv2.minAreaRect(coords)[-1]
+            if angle < -45:
+                angle = 90 + angle
+            
+            # 回転補正
+            (h, w) = cleaned.shape[:2]
+            center = (w // 2, h // 2)
+            M = cv2.getRotationMatrix2D(center, angle, 1.0)
+            rotated = cv2.warpAffine(cleaned, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+            
+            # OpenCV画像をPIL Imageに変換
+            result_image = Image.fromarray(rotated)
+            
+            logger.info("Advanced image preprocessing completed")
+            return result_image
+            
+        except Exception as e:
+            logger.warning(f"Advanced preprocessing failed, using basic method: {e}")
+            # 高度な前処理が失敗した場合は基本的な処理にフォールバック
+            return self._preprocess_image_basic(image)
+    
+    def _preprocess_image_basic(self, image: Image.Image) -> Image.Image:
+        """基本的な画像前処理"""
+        # Convert to RGB if necessary
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # グレースケール変換
+        image = image.convert('L')
+        
+        # コントラスト強調
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(2.0)
+        
+        # シャープネス強調
+        enhancer = ImageEnhance.Sharpness(image)
+        image = enhancer.enhance(2.0)
+        
+        # Resize if too large
+        width, height = image.size
+        if width > 2000 or height > 2000:
+            ratio = min(2000/width, 2000/height)
+            new_width = int(width * ratio)
+            new_height = int(height * ratio)
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        return image
+    
     def process_image(self, image_bytes: bytes) -> Dict[str, Any]:
         """Process receipt image and extract information securely."""
         try:
@@ -181,18 +256,42 @@ class ReceiptProcessor:
                     "data": None
                 }
             
-            # Open and preprocess image
+            # Open image
             image = Image.open(io.BytesIO(image_bytes))
-            image = self._preprocess_image(image)
+            logger.info(f"Original image size: {image.size}, mode: {image.mode}")
             
-            # Extract text using OCR
+            # 高度な前処理を試みる
+            try:
+                import cv2
+                processed_image = self._preprocess_image_advanced(image)
+            except ImportError:
+                logger.warning("OpenCV not available, using basic preprocessing")
+                processed_image = self._preprocess_image_basic(image)
+            
+            # Extract text using OCR with custom config
             logger.info("Starting OCR processing...")
-            text = pytesseract.image_to_string(image, lang='jpn+eng')
-            logger.info(f"OCR extracted text (first 200 chars): {text[:200]}...")
-            logger.debug(f"Full OCR text: {text}")
+            
+            # Tesseractの設定を最適化
+            custom_config = r'--oem 3 --psm 6'  # OEM 3: Default, PSM 6: Uniform block of text
+            
+            # 日本語と英語の両方を認識
+            text = pytesseract.image_to_string(processed_image, lang='jpn+eng', config=custom_config)
+            
+            # デバッグ用：OCR結果を詳細にログ出力
+            logger.info(f"OCR extracted text length: {len(text)}")
+            logger.info(f"OCR extracted text (first 500 chars): {text[:500]}")
+            logger.debug(f"Full OCR text:\n{text}")
+            
+            # テキストが空の場合の処理
+            if not text.strip():
+                logger.warning("OCR returned empty text, trying with different settings")
+                # 異なる設定で再試行
+                custom_config = r'--oem 1 --psm 3'  # OEM 1: LSTM only, PSM 3: Fully automatic
+                text = pytesseract.image_to_string(processed_image, lang='jpn+eng', config=custom_config)
+                logger.info(f"Second OCR attempt result length: {len(text)}")
             
             # Process text based on available services
-            if self.openai_available:
+            if self.openai_available and text.strip():
                 result = self._extract_with_ai(text)
                 if not result["success"]:
                     logger.warning("AI extraction failed, falling back to regex")
@@ -239,22 +338,6 @@ class ReceiptProcessor:
             
         except Exception:
             return False
-    
-    def _preprocess_image(self, image: Image.Image) -> Image.Image:
-        """Preprocess image for better OCR results."""
-        # Convert to RGB if necessary
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Resize if too large
-        width, height = image.size
-        if width > 2000 or height > 2000:
-            ratio = min(2000/width, 2000/height)
-            new_width = int(width * ratio)
-            new_height = int(height * ratio)
-            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        return image
     
     def _extract_with_ai(self, text: str) -> Dict[str, Any]:
         """Extract receipt information using OpenAI API with error handling."""
@@ -332,6 +415,14 @@ class ReceiptProcessor:
     def _extract_with_regex(self, text: str) -> Dict[str, Any]:
         """Extract receipt information using regex patterns as fallback."""
         try:
+            # テキストが空の場合
+            if not text.strip():
+                return {
+                    "success": False,
+                    "message": "OCRでテキストを抽出できませんでした。画像の品質を確認してください。",
+                    "data": None
+                }
+            
             date_str = self._extract_date(text)
             store_name = self._extract_store_name(text)
             total_amount = self._extract_amount(text)
@@ -344,6 +435,9 @@ class ReceiptProcessor:
                 missing_fields.append("店名")
             if not total_amount:
                 missing_fields.append("合計金額")
+            
+            # デバッグログ
+            logger.info(f"Regex extraction results - Date: {date_str}, Store: {store_name}, Amount: {total_amount}")
             
             if missing_fields:
                 return {
@@ -409,28 +503,47 @@ class ReceiptProcessor:
         # Try to find a line that looks like a store name (first few lines, no numbers)
         for i in range(min(5, len(lines))):
             line = lines[i]
-            if line and len(line) > 1 and not any(char.isdigit() for char in line):
-                # Remove common OCR artifacts
-                cleaned = re.sub(r'[^\w\s\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', '', line)
-                if cleaned:
-                    return cleaned
+            # 店名らしい行を探す（数字が少なく、長すぎない）
+            if line and len(line) > 1 and len(line) < 30:
+                # 数字の割合が30%未満の行を店名候補とする
+                digit_count = sum(1 for char in line if char.isdigit())
+                if digit_count / len(line) < 0.3:
+                    # Remove common OCR artifacts
+                    cleaned = re.sub(r'[^\w\s\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', '', line)
+                    if cleaned:
+                        return cleaned
         
         # Fallback: return first non-empty line
         for line in lines:
-            if line:
-                return line
+            if line and len(line) > 1:
+                return line[:50]  # 最大50文字
         
         return None
     
     def _extract_amount(self, text: str) -> Optional[float]:
         """Extract total amount from receipt text."""
-        for pattern in AMOUNT_PATTERNS:
+        # より柔軟なパターンマッチング
+        extended_patterns = AMOUNT_PATTERNS + [
+            r'¥\s*(\d{1,3}(,\d{3})*)',  # ¥1,270
+            r'(\d{1,3}(,\d{3})*)\s*円',  # 1,270円
+            r'計\s*(\d{1,3}(,\d{3})*)',  # 計 1,270
+        ]
+        
+        for pattern in extended_patterns:
             matches = re.search(pattern, text)
             if matches:
                 try:
-                    amount_str = matches.group(1) if "合計" in pattern else matches.group(2)
+                    # 数値部分を抽出
+                    amount_str = matches.group(1)
+                    if "合計" in pattern or "小計" in pattern or "総額" in pattern or "金額" in pattern:
+                        amount_str = matches.group(2) if matches.lastindex >= 2 else matches.group(1)
+                    
                     amount_str = amount_str.replace(',', '')
-                    return float(amount_str)
+                    amount = float(amount_str)
+                    
+                    # 妥当な金額範囲かチェック（1円〜1000万円）
+                    if 1 <= amount <= 10000000:
+                        return amount
                 except (ValueError, IndexError):
                     continue
         
