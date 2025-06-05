@@ -1,163 +1,484 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import psycopg
-import os
+import logging
+import time
+from functools import wraps
+from typing import Dict, Any, List
 import io
 import csv
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-import json
-from dotenv import load_dotenv
 
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer
+import psycopg
+
+from app.config import settings
 from app.models import ReceiptData, ReceiptResponse, ReceiptList
 from app.receipt_processor import ReceiptProcessor
 
-load_dotenv()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO if settings.debug else logging.WARNING,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Receipt Scanner API")
-
-# Disable CORS. Do not remove this for full-stack development.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+# Initialize FastAPI app
+app = FastAPI(
+    title="Receipt Scanner API",
+    description="Secure receipt scanning and processing API",
+    version="1.0.0",
+    debug=settings.debug
 )
 
-receipt_processor = ReceiptProcessor()
+# Configure CORS with secure settings
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
+# Initialize components
+receipt_processor = ReceiptProcessor()
+security = HTTPBearer(auto_error=False)
+
+# In-memory storage (replace with database in production)
 receipts_db: List[Dict[str, Any]] = []
 
+# Rate limiting storage
+rate_limit_storage: Dict[str, List[float]] = {}
+
+def rate_limit(max_requests: int = None, window: int = None):
+    """Rate limiting decorator."""
+    max_req = max_requests or settings.rate_limit_requests
+    window_sec = window or settings.rate_limit_window
+    
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(request: Request, *args, **kwargs):
+            client_ip = request.client.host
+            current_time = time.time()
+            
+            # Initialize storage for IP if not exists
+            if client_ip not in rate_limit_storage:
+                rate_limit_storage[client_ip] = []
+            
+            # Clean old requests
+            rate_limit_storage[client_ip] = [
+                req_time for req_time in rate_limit_storage[client_ip]
+                if current_time - req_time < window_sec
+            ]
+            
+            # Check rate limit
+            if len(rate_limit_storage[client_ip]) >= max_req:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Rate limit exceeded. Maximum {max_req} requests per {window_sec} seconds."
+                )
+            
+            # Record current request
+            rate_limit_storage[client_ip].append(current_time)
+            
+            return await func(request, *args, **kwargs)
+        return wrapper
+    return decorator
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    
+    # Security headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    
+    return response
+
 @app.get("/healthz")
-async def healthz():
-    return {"status": "ok"}
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment": settings.environment,
+        "openai_available": settings.openai_available
+    }
+
+@app.get("/api/status")
+async def api_status():
+    """API status endpoint with service information."""
+    return {
+        "api_version": "1.0.0",
+        "environment": settings.environment,
+        "features": {
+            "openai_processing": settings.openai_available,
+            "ocr_fallback": True,
+            "rate_limiting": True
+        },
+        "limits": {
+            "max_requests_per_minute": settings.rate_limit_requests,
+            "max_file_size_mb": 10
+        }
+    }
 
 @app.post("/api/receipts/upload", response_model=ReceiptResponse)
-async def upload_receipt(file: UploadFile = File(...)):
-    """Upload and process a receipt image."""
-    allowed_extensions = [".jpg", ".jpeg", ".png"]
-    file_ext = os.path.splitext(file.filename)[1].lower()
+@rate_limit()
+async def upload_receipt(request: Request, file: UploadFile = File(...)):
+    """Upload and process a receipt image with security validation."""
     
-    if file_ext not in allowed_extensions:
+    # Validate file
+    if not file.filename:
         return JSONResponse(
             status_code=400,
             content={
                 "success": False,
-                "message": "サポートされていないファイル形式です。JPGまたはPNG形式のファイルをアップロードしてください。",
+                "message": "ファイル名が提供されていません。",
+                "data": None
+            }
+        )
+    
+    # Check file extension
+    allowed_extensions = [".jpg", ".jpeg", ".png"]
+    file_ext = file.filename.split(".")[-1].lower()
+    if f".{file_ext}" not in allowed_extensions:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": "サポートされていないファイル形式です。JPEGまたはPNG形式のファイルをアップロードしてください。",
+                "data": None
+            }
+        )
+    
+    # Check file size (10MB limit)
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": "ファイルサイズが大きすぎます。10MB以下のファイルをアップロードしてください。",
                 "data": None
             }
         )
     
     try:
-        contents = await file.read()
-        
-        result = receipt_processor.process_image(contents)
+        # Process the image
+        result = receipt_processor.process_image(content)
         
         if result["success"]:
+            # Add unique ID and timestamp
             receipt_data = result["data"]
             receipt_data["id"] = len(receipts_db) + 1
+            receipt_data["created_at"] = datetime.utcnow().isoformat()
+            receipt_data["processed_with"] = "ai" if settings.openai_available else "ocr"
+            
+            # Store in database
             receipts_db.append(receipt_data)
+            
+            logger.info(f"Successfully processed receipt {receipt_data['id']}")
         
         return result
+        
     except Exception as e:
+        logger.error(f"Error processing receipt: {e}")
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
-                "message": f"画像処理中にエラーが発生しました: {str(e)}",
+                "message": "画像処理中にサーバーエラーが発生しました。しばらく時間をおいて再度お試しください。",
                 "data": None
             }
         )
 
 @app.post("/api/receipts/test", response_model=ReceiptResponse)
 async def test_receipt_upload():
-    """Test endpoint for receipt upload without OCR."""
+    """Test endpoint for receipt upload without file processing."""
     try:
         receipt_data = {
+            "id": len(receipts_db) + 1,
             "date": "2023-05-15",
             "store_name": "テストストア",
             "total_amount": 1500.0,
             "tax_excluded_amount": 1364.0,
             "tax_included_amount": None,
-            "expense_category": None
+            "expense_category": None,
+            "created_at": datetime.utcnow().isoformat(),
+            "processed_with": "test"
         }
         
-        receipt_data["id"] = len(receipts_db) + 1
         receipts_db.append(receipt_data)
         
         return {
             "success": True,
-            "message": "レシート情報を抽出しました。",
+            "message": "テストレシート情報を作成しました。",
             "data": receipt_data
         }
+        
     except Exception as e:
+        logger.error(f"Error in test endpoint: {e}")
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
-                "message": f"処理中にエラーが発生しました: {str(e)}",
+                "message": f"テスト処理中にエラーが発生しました: {str(e)}",
                 "data": None
             }
         )
 
 @app.get("/api/receipts", response_model=ReceiptList)
 async def get_receipts():
-    """Get all receipts."""
-    return {"receipts": receipts_db}
+    """Get all receipts with pagination support."""
+    try:
+        # Sort by creation date (newest first)
+        sorted_receipts = sorted(
+            receipts_db, 
+            key=lambda x: x.get("created_at", ""), 
+            reverse=True
+        )
+        
+        return {"receipts": sorted_receipts}
+        
+    except Exception as e:
+        logger.error(f"Error retrieving receipts: {e}")
+        raise HTTPException(status_code=500, detail="レシート一覧の取得中にエラーが発生しました。")
+
+@app.get("/api/receipts/{receipt_id}")
+async def get_receipt(receipt_id: int):
+    """Get a specific receipt by ID."""
+    try:
+        receipt = next((r for r in receipts_db if r["id"] == receipt_id), None)
+        if not receipt:
+            raise HTTPException(status_code=404, detail="指定されたレシートが見つかりません。")
+        
+        return {"receipt": receipt}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving receipt {receipt_id}: {e}")
+        raise HTTPException(status_code=500, detail="レシート取得中にエラーが発生しました。")
+
+@app.put("/api/receipts/{receipt_id}")
+async def update_receipt(receipt_id: int, receipt_data: ReceiptData):
+    """Update a specific receipt."""
+    try:
+        receipt_index = next((i for i, r in enumerate(receipts_db) if r["id"] == receipt_id), None)
+        if receipt_index is None:
+            raise HTTPException(status_code=404, detail="指定されたレシートが見つかりません。")
+        
+        # Update receipt data
+        updated_receipt = receipt_data.dict()
+        updated_receipt["id"] = receipt_id
+        updated_receipt["updated_at"] = datetime.utcnow().isoformat()
+        
+        receipts_db[receipt_index].update(updated_receipt)
+        
+        return {
+            "success": True,
+            "message": "レシート情報を更新しました。",
+            "data": receipts_db[receipt_index]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating receipt {receipt_id}: {e}")
+        raise HTTPException(status_code=500, detail="レシート更新中にエラーが発生しました。")
+
+@app.delete("/api/receipts/{receipt_id}")
+async def delete_receipt(receipt_id: int):
+    """Delete a specific receipt."""
+    try:
+        receipt_index = next((i for i, r in enumerate(receipts_db) if r["id"] == receipt_id), None)
+        if receipt_index is None:
+            raise HTTPException(status_code=404, detail="指定されたレシートが見つかりません。")
+        
+        deleted_receipt = receipts_db.pop(receipt_index)
+        
+        return {
+            "success": True,
+            "message": "レシートを削除しました。",
+            "data": {"deleted_id": receipt_id}
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting receipt {receipt_id}: {e}")
+        raise HTTPException(status_code=500, detail="レシート削除中にエラーが発生しました。")
 
 @app.get("/api/receipts/export")
 async def export_receipts():
-    """Export receipts as CSV."""
-    if not receipts_db:
-        return JSONResponse(
-            status_code=404,
-            content={"message": "エクスポートするデータがありません。"}
-        )
-    
-    output = io.StringIO()
-    fieldnames = ["date", "store_name", "total_amount", "tax_excluded_amount", "tax_included_amount", "expense_category"]
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
-    
-    writer.writerow({
-        "date": "日付",
-        "store_name": "店名・会社名",
-        "total_amount": "合計金額",
-        "tax_excluded_amount": "税抜価格",
-        "tax_included_amount": "税込価格",
-        "expense_category": "費目タグ"
-    })
-    
-    for receipt in receipts_db:
+    """Export receipts as CSV with secure filename generation."""
+    try:
+        if not receipts_db:
+            return JSONResponse(
+                status_code=404,
+                content={"message": "エクスポートするデータがありません。"}
+            )
+        
+        # Create CSV content
+        output = io.StringIO()
+        fieldnames = [
+            "id", "date", "store_name", "total_amount", 
+            "tax_excluded_amount", "tax_included_amount", 
+            "expense_category", "created_at", "processed_with"
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        
+        # Write header in Japanese
         writer.writerow({
-            "date": receipt["date"],
-            "store_name": receipt["store_name"],
-            "total_amount": receipt["total_amount"],
-            "tax_excluded_amount": receipt["tax_excluded_amount"] if receipt["tax_excluded_amount"] is not None else "",
-            "tax_included_amount": receipt["tax_included_amount"] if receipt["tax_included_amount"] is not None else "",
-            "expense_category": receipt["expense_category"] if receipt["expense_category"] is not None else ""
+            "id": "ID",
+            "date": "日付",
+            "store_name": "店名・会社名",
+            "total_amount": "合計金額",
+            "tax_excluded_amount": "税抜価格",
+            "tax_included_amount": "税込価格",
+            "expense_category": "費目タグ",
+            "created_at": "作成日時",
+            "processed_with": "処理方法"
         })
-    
-    csv_content = output.getvalue()
-    
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    headers = {
-        "Content-Disposition": f"attachment; filename=receipt_data_{timestamp}.csv",
-        "Content-Type": "text/csv; charset=utf-8-sig",  # UTF-8 with BOM for Excel compatibility
-        "Access-Control-Allow-Origin": "*",  # Add CORS header
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "*"
-    }
-    
-    return JSONResponse(
-        content={"csv_data": csv_content},
-        headers=headers
-    )
+        
+        # Write data rows
+        for receipt in sorted(receipts_db, key=lambda x: x.get("created_at", "")):
+            writer.writerow({
+                "id": receipt.get("id", ""),
+                "date": receipt.get("date", ""),
+                "store_name": receipt.get("store_name", ""),
+                "total_amount": receipt.get("total_amount", ""),
+                "tax_excluded_amount": receipt.get("tax_excluded_amount", "") if receipt.get("tax_excluded_amount") is not None else "",
+                "tax_included_amount": receipt.get("tax_included_amount", "") if receipt.get("tax_included_amount") is not None else "",
+                "expense_category": receipt.get("expense_category", "") if receipt.get("expense_category") is not None else "",
+                "created_at": receipt.get("created_at", ""),
+                "processed_with": receipt.get("processed_with", "")
+            })
+        
+        csv_content = output.getvalue()
+        
+        # Generate secure filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"receipt_data_{timestamp}.csv"
+        
+        headers = {
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Type": "text/csv; charset=utf-8-sig",  # UTF-8 with BOM for Excel compatibility
+        }
+        
+        return JSONResponse(
+            content={"csv_data": csv_content, "filename": filename},
+            headers=headers
+        )
+        
+    except Exception as e:
+        logger.error(f"Error exporting receipts: {e}")
+        raise HTTPException(status_code=500, detail="データエクスポート中にエラーが発生しました。")
 
 @app.delete("/api/receipts")
 async def clear_receipts():
-    """Clear all receipts from memory."""
-    global receipts_db
-    receipts_db = []
-    return {"message": "すべてのレシートデータを削除しました。"}
+    """Clear all receipts from memory (development only)."""
+    try:
+        if settings.is_production:
+            raise HTTPException(
+                status_code=403, 
+                detail="本番環境では全データ削除は許可されていません。"
+            )
+        
+        global receipts_db
+        count = len(receipts_db)
+        receipts_db = []
+        
+        logger.info(f"Cleared {count} receipts from memory")
+        
+        return {
+            "success": True,
+            "message": f"{count}件のレシートデータを削除しました。",
+            "data": {"deleted_count": count}
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error clearing receipts: {e}")
+        raise HTTPException(status_code=500, detail="データ削除中にエラーが発生しました。")
+
+@app.get("/api/stats")
+async def get_statistics():
+    """Get receipt statistics."""
+    try:
+        if not receipts_db:
+            return {
+                "total_receipts": 0,
+                "total_amount": 0,
+                "average_amount": 0,
+                "processing_methods": {}
+            }
+        
+        total_receipts = len(receipts_db)
+        total_amount = sum(r.get("total_amount", 0) for r in receipts_db)
+        average_amount = total_amount / total_receipts if total_receipts > 0 else 0
+        
+        # Count processing methods
+        processing_methods = {}
+        for receipt in receipts_db:
+            method = receipt.get("processed_with", "unknown")
+            processing_methods[method] = processing_methods.get(method, 0) + 1
+        
+        return {
+            "total_receipts": total_receipts,
+            "total_amount": total_amount,
+            "average_amount": round(average_amount, 2),
+            "processing_methods": processing_methods
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting statistics: {e}")
+        raise HTTPException(status_code=500, detail="統計情報取得中にエラーが発生しました。")
+
+# Error handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Custom HTTP exception handler."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "message": exc.detail,
+            "data": None
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """General exception handler for unhandled errors."""
+    logger.error(f"Unhandled exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "message": "予期しないエラーが発生しました。しばらく時間をおいて再度お試しください。",
+            "data": None
+        }
+    )
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Application startup event."""
+    logger.info(f"Receipt Scanner API starting up in {settings.environment} mode")
+    logger.info(f"OpenAI API available: {settings.openai_available}")
+    logger.info(f"Debug mode: {settings.debug}")
+    logger.info(f"Allowed origins: {settings.allowed_origins}")
+
+# Shutdown event
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown event."""
+    logger.info("Receipt Scanner API shutting down")
