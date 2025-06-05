@@ -6,6 +6,9 @@ export interface ReceiptData {
   tax_excluded_amount?: number | null;
   tax_included_amount?: number | null;
   expense_category?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  processed_with?: string;
 }
 
 export interface ReceiptResponse {
