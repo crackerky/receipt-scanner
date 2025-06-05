@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Camera, Upload, ArrowLeft, FileDown, BarChart, AlertCircle, CheckCircle } from 'lucide-react';
+import { Camera, Upload, ArrowLeft, FileDown, BarChart, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card } from './components/ui/card';
 import { Progress } from './components/ui/progress';
@@ -270,9 +270,13 @@ function App() {
         <Button 
           className="h-16 text-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
           onClick={() => fileInputRef.current?.click()}
-          disabled={backendStatus !== 'online'}
+          disabled={backendStatus !== 'online' || isLoading}
         >
-          <Camera className="mr-2 h-6 w-6" />
+          {isLoading ? (
+            <Loader2 className="mr-2 h-6 w-6 animate-spin" />
+          ) : (
+            <Camera className="mr-2 h-6 w-6" />
+          )}
           レシートを撮影
         </Button>
         
@@ -280,9 +284,13 @@ function App() {
           variant="outline" 
           className="h-12 text-base disabled:opacity-50"
           onClick={() => fileInputRef.current?.click()}
-          disabled={backendStatus !== 'online'}
+          disabled={backendStatus !== 'online' || isLoading}
         >
-          <Upload className="mr-2 h-5 w-5" />
+          {isLoading ? (
+            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+          ) : (
+            <Upload className="mr-2 h-5 w-5" />
+          )}
           画像を選択
         </Button>
         
@@ -292,6 +300,7 @@ function App() {
               variant="outline" 
               className="flex-1"
               onClick={() => setView('list')}
+              disabled={isLoading}
             >
               レシート一覧
             </Button>
@@ -299,6 +308,7 @@ function App() {
               variant="outline" 
               className="flex-1"
               onClick={() => setView('chart')}
+              disabled={isLoading}
             >
               <BarChart className="mr-1 h-4 w-4" />
               グラフ
@@ -311,8 +321,11 @@ function App() {
           variant="ghost" 
           className="mt-4 text-sm text-gray-500 disabled:opacity-50"
           onClick={handleTestUpload}
-          disabled={backendStatus !== 'online'}
+          disabled={backendStatus !== 'online' || isLoading}
         >
+          {isLoading ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : null}
           テストレシート追加
         </Button>
       </div>
@@ -351,7 +364,7 @@ function App() {
     return (
       <div className="flex flex-col h-full">
         <div className="flex items-center p-4 border-b">
-          <Button variant="ghost" size="icon" onClick={() => setView('home')}>
+          <Button variant="ghost" size="icon" onClick={() => setView('home')} disabled={isLoading}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <h2 className="text-lg font-semibold ml-2">レシート情報の確認</h2>
@@ -367,6 +380,7 @@ function App() {
                   className="w-full p-2 border rounded-md"
                   value={currentReceipt.date}
                   onChange={(e) => handleUpdateReceipt('date', e.target.value)}
+                  disabled={isLoading}
                 />
               </div>
               
@@ -377,6 +391,7 @@ function App() {
                   className="w-full p-2 border rounded-md"
                   value={currentReceipt.store_name}
                   onChange={(e) => handleUpdateReceipt('store_name', e.target.value)}
+                  disabled={isLoading}
                 />
               </div>
               
@@ -387,6 +402,7 @@ function App() {
                   className="w-full p-2 border rounded-md"
                   value={currentReceipt.total_amount}
                   onChange={(e) => handleUpdateReceipt('total_amount', parseFloat(e.target.value))}
+                  disabled={isLoading}
                 />
               </div>
               
@@ -397,6 +413,7 @@ function App() {
                   className="w-full p-2 border rounded-md"
                   value={currentReceipt.tax_excluded_amount || ''}
                   onChange={(e) => handleUpdateReceipt('tax_excluded_amount', e.target.value ? parseFloat(e.target.value) : null)}
+                  disabled={isLoading}
                 />
               </div>
               
@@ -406,6 +423,7 @@ function App() {
                   className="w-full p-2 border rounded-md"
                   value={currentReceipt.expense_category || ''}
                   onChange={(e) => handleUpdateReceipt('expense_category', e.target.value)}
+                  disabled={isLoading}
                 >
                   <option value="">選択してください</option>
                   <option value="交通費">交通費</option>
@@ -421,8 +439,19 @@ function App() {
         </div>
         
         <div className="p-4 border-t">
-          <Button className="w-full bg-blue-600 hover:bg-blue-700" onClick={handleSaveReceipt}>
-            保存する
+          <Button 
+            className="w-full bg-blue-600 hover:bg-blue-700" 
+            onClick={handleSaveReceipt}
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                保存中...
+              </>
+            ) : (
+              '保存する'
+            )}
           </Button>
         </div>
       </div>
@@ -433,14 +462,18 @@ function App() {
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between p-4 border-b">
         <div className="flex items-center">
-          <Button variant="ghost" size="icon" onClick={() => setView('home')}>
+          <Button variant="ghost" size="icon" onClick={() => setView('home')} disabled={isLoading}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <h2 className="text-lg font-semibold ml-2">レシート一覧</h2>
         </div>
         
-        <Button variant="outline" size="sm" onClick={handleExportCSV}>
-          <FileDown className="h-4 w-4 mr-1" />
+        <Button variant="outline" size="sm" onClick={handleExportCSV} disabled={isLoading}>
+          {isLoading ? (
+            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+          ) : (
+            <FileDown className="h-4 w-4 mr-1" />
+          )}
           CSVエクスポート
         </Button>
       </div>
@@ -449,7 +482,7 @@ function App() {
         {receipts.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full p-4 text-center">
             <p className="text-gray-500 mb-4">まだレシートが登録されていません。最初のレシートをスキャンしてみましょう！</p>
-            <Button onClick={() => setView('home')}>
+            <Button onClick={() => setView('home')} disabled={isLoading}>
               レシートを追加
             </Button>
           </div>
@@ -478,7 +511,7 @@ function App() {
   const ChartView = () => (
     <div className="flex flex-col h-full">
       <div className="flex items-center p-4 border-b">
-        <Button variant="ghost" size="icon" onClick={() => setView('home')}>
+        <Button variant="ghost" size="icon" onClick={() => setView('home')} disabled={isLoading}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <h2 className="text-lg font-semibold ml-2">経費グラフ</h2>
@@ -488,7 +521,7 @@ function App() {
         {receipts.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <p className="text-gray-500 mb-4">データがありません。レシートを追加するとグラフが表示されます。</p>
-            <Button onClick={() => setView('home')}>
+            <Button onClick={() => setView('home')} disabled={isLoading}>
               レシートを追加
             </Button>
           </div>
