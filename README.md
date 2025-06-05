@@ -61,7 +61,8 @@ poetry run uvicorn app.main:app --reload --port 8000
 ```bash
 # フロントエンド設定（別ターミナル）
 cd receipt-scanner-app/receipt-scanner-frontend
-echo "VITE_API_URL=http://localhost:8000" > .env.local
+cp .env.example .env.local
+# .env.localファイルでVITE_API_URLを設定
 npm install
 npm run dev
 ```
@@ -71,6 +72,57 @@ npm run dev
 1. ブラウザで `http://localhost:3000` にアクセス
 2. レシート画像をアップロード
 3. 自動的にデータが抽出されることを確認
+
+## 🌐 デプロイメント
+
+### Netlify (フロントエンド推奨)
+
+#### 方法1: 自動デプロイ（推奨）
+
+1. **Netlifyダッシュボードにアクセス**
+2. **"New site from Git"をクリック**
+3. **GitHubリポジトリを選択**
+4. **ビルド設定は自動検出** (netlify.tomlで設定済み)
+5. **環境変数を設定**:
+   ```
+   VITE_API_URL = https://your-backend-api-url.com
+   ```
+6. **Deploy siteをクリック**
+
+#### 方法2: 手動設定
+
+Netlifyダッシュボードで以下を設定:
+
+**Build settings:**
+- Build command: `npm ci && npm run build`
+- Publish directory: `receipt-scanner-app/receipt-scanner-frontend/dist`
+- Base directory: `receipt-scanner-app/receipt-scanner-frontend`
+
+**Environment variables:**
+```
+VITE_API_URL = https://your-backend-api-url.com
+NODE_VERSION = 18
+```
+
+### Railway (バックエンド推奨)
+
+```bash
+npm install -g @railway/cli
+railway login
+railway init
+railway variables set OPENAI_API_KEY=sk-your-key
+railway variables set ENVIRONMENT=production
+railway up
+```
+
+### Vercel (フロントエンド代替案)
+
+```bash
+npm install -g vercel
+cd receipt-scanner-app/receipt-scanner-frontend
+vercel env add VITE_API_URL production
+vercel --prod
+```
 
 ## 🐳 Docker での実行
 
@@ -100,6 +152,7 @@ docker run -p 8000:8000 \
 
 ### 環境変数
 
+**バックエンド:**
 | 変数名 | 必須 | デフォルト | 説明 |
 |--------|------|------------|------|
 | `OPENAI_API_KEY` | ✅ | - | OpenAI APIキー |
@@ -109,35 +162,12 @@ docker run -p 8000:8000 \
 | `RATE_LIMIT_WINDOW` | ❌ | `60` | レート制限時間窓（秒） |
 | `ALLOWED_ORIGINS` | ❌ | `http://localhost:3000` | CORS許可オリジン |
 
-## 🚀 本番デプロイ
-
-### GitHub Actions自動デプロイ
-
-1. **Repository Secrets設定完了**
-2. **main ブランチにプッシュ**
-3. **自動的にテスト・ビルド・デプロイ実行**
-
-### 手動デプロイ
-
-#### Railway (バックエンド推奨)
-
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway variables set OPENAI_API_KEY=sk-your-key
-railway variables set ENVIRONMENT=production
-railway up
-```
-
-#### Vercel (フロントエンド推奨)
-
-```bash
-npm install -g vercel
-cd receipt-scanner-app/receipt-scanner-frontend
-vercel env add VITE_API_URL production
-vercel --prod
-```
+**フロントエンド:**
+| 変数名 | 必須 | デフォルト | 説明 |
+|--------|------|------------|------|
+| `VITE_API_URL` | ✅ | `http://localhost:8000` | バックエンドAPI URL |
+| `VITE_APP_NAME` | ❌ | `Receipt Scanner` | アプリケーション名 |
+| `VITE_ENVIRONMENT` | ❌ | `development` | フロントエンド環境 |
 
 ## 🧪 テスト
 
@@ -226,6 +256,16 @@ Access-Control-Allow-Origin error
 Rate limit exceeded
 ```
 **解決策**: 1分間に10回以下のリクエストに調整
+
+#### Netlify デプロイエラー
+```
+npm error enoent Could not read package.json
+```
+**解決策**: 
+1. リポジトリルートに`netlify.toml`が存在することを確認
+2. Netlifyダッシュボードで Base directory を `receipt-scanner-app/receipt-scanner-frontend` に設定
+3. Build command を `npm ci && npm run build` に設定
+4. Publish directory を `dist` に設定
 
 ## 🤝 コントリビューション
 
