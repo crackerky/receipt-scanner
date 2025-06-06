@@ -72,28 +72,57 @@ def setup_tesseract():
 # Tesseractのセットアップ
 tesseract_available = setup_tesseract()
 
-# Date patterns for Japanese receipts
+# Date patterns for Japanese receipts (改善版)
 DATE_PATTERNS = [
-    r'(\d{4})[/\-年](\d{1,2})[/\-月](\d{1,2})',  # YYYY/MM/DD or YYYY-MM-DD or YYYY年MM月DD
-    r'(\d{2})[/\-年](\d{1,2})[/\-月](\d{1,2})',   # YY/MM/DD or YY-MM-DD or YY年MM月DD
-    r'令和(\d{1,2})年(\d{1,2})月(\d{1,2})日',    # Reiwa era
-    r'平成(\d{1,2})年(\d{1,2})月(\d{1,2})日',    # Heisei era
+    # YYYY/MM/DD, YYYY-MM-DD, YYYY年MM月DD日
+    r'(\d{4})[/\-年](\d{1,2})[/\-月](\d{1,2})',
+    # YY/MM/DD, YY-MM-DD, YY年MM月DD日
+    r'(\d{2})[/\-年](\d{1,2})[/\-月](\d{1,2})',
+    # 令和/平成
+    r'令和(\d{1,2})年(\d{1,2})月(\d{1,2})日',
+    r'平成(\d{1,2})年(\d{1,2})月(\d{1,2})日',
+    # MM/DD形式（年なし）
+    r'(\d{1,2})[/\-月](\d{1,2})日?',
+    # 2023.05.15形式
+    r'(\d{4})\.(\d{1,2})\.(\d{1,2})',
+    # 23.05.15形式
+    r'(\d{2})\.(\d{1,2})\.(\d{1,2})',
 ]
 
-# Amount patterns
+# Amount patterns (改善版)
 AMOUNT_PATTERNS = [
-    r'合計\s*[：:]\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
-    r'合計\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
-    r'(小計|総額|金額)\s*[：:]\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
-    r'(小計|総額|金額)\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
+    # 合計パターン
+    r'合計\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'合\s*計\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'計\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    
+    # 小計/総額/金額パターン
+    r'(?:小計|総額|金額)\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    
+    # ¥記号付きパターン
+    r'¥\s*(\d{1,3}(?:,\d{3})*)',
+    
+    # 円付きパターン
+    r'(\d{1,3}(?:,\d{3})*)\s*円',
+    
+    # お預かり/お釣りパターン（レシートによくある）
+    r'お預かり\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*)',
+    r'お釣り\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*)',
+    
+    # TOTAL（英語）パターン
+    r'TOTAL\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'Total\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    
+    # 大きい数字を優先的に取得（最後の手段）
+    r'(\d{3,}(?:,\d{3})*)',
 ]
 
 # Tax patterns
 TAX_PATTERNS = [
-    r'(税抜|税別)\s*[：:]\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
-    r'(税抜|税別)\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
-    r'(税込)\s*[：:]\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
-    r'(税込)\s*¥?(\d{1,3}(,\d{3})*(\.\d+)?)',
+    r'(税抜|税別)\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'(税込)\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'内税\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'消費税\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
 ]
 
 class ReceiptProcessor:
@@ -476,6 +505,8 @@ class ReceiptProcessor:
     
     def _extract_date(self, text: str) -> Optional[str]:
         """Extract date from receipt text."""
+        current_year = datetime.now().year
+        
         for pattern in DATE_PATTERNS:
             matches = re.search(pattern, text)
             if matches:
@@ -488,6 +519,10 @@ class ReceiptProcessor:
                         year = 1988 + int(matches.group(1))
                         month = int(matches.group(2))
                         day = int(matches.group(3))
+                    elif len(matches.groups()) == 2:  # MM/DD形式
+                        year = current_year
+                        month = int(matches.group(1))
+                        day = int(matches.group(2))
                     else:
                         year = int(matches.group(1))
                         month = int(matches.group(2))
@@ -498,7 +533,7 @@ class ReceiptProcessor:
                     
                     date_obj = datetime(year, month, day)
                     return date_obj.strftime("%Y-%m-%d")
-                except ValueError:
+                except (ValueError, IndexError):
                     continue
         
         return None
@@ -508,16 +543,16 @@ class ReceiptProcessor:
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         
         # Try to find a line that looks like a store name (first few lines, no numbers)
-        for i in range(min(5, len(lines))):
+        for i in range(min(10, len(lines))):  # 最初の10行をチェック
             line = lines[i]
             # 店名らしい行を探す（数字が少なく、長すぎない）
-            if line and len(line) > 1 and len(line) < 30:
+            if line and len(line) > 1 and len(line) < 50:
                 # 数字の割合が30%未満の行を店名候補とする
                 digit_count = sum(1 for char in line if char.isdigit())
-                if digit_count / len(line) < 0.3:
+                if len(line) > 0 and digit_count / len(line) < 0.3:
                     # Remove common OCR artifacts
                     cleaned = re.sub(r'[^\w\s\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', '', line)
-                    if cleaned:
+                    if cleaned and len(cleaned) > 1:
                         return cleaned
         
         # Fallback: return first non-empty line
@@ -529,30 +564,38 @@ class ReceiptProcessor:
     
     def _extract_amount(self, text: str) -> Optional[float]:
         """Extract total amount from receipt text."""
-        # より柔軟なパターンマッチング
-        extended_patterns = AMOUNT_PATTERNS + [
-            r'¥\s*(\d{1,3}(,\d{3})*)',  # ¥1,270
-            r'(\d{1,3}(,\d{3})*)\s*円',  # 1,270円
-            r'計\s*(\d{1,3}(,\d{3})*)',  # 計 1,270
-        ]
+        amounts_found = []
         
-        for pattern in extended_patterns:
-            matches = re.search(pattern, text)
-            if matches:
+        # すべてのパターンでマッチを試みる
+        for pattern in AMOUNT_PATTERNS:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
                 try:
-                    # 数値部分を抽出
-                    amount_str = matches.group(1)
-                    if "合計" in pattern or "小計" in pattern or "総額" in pattern or "金額" in pattern:
-                        amount_str = matches.group(2) if matches.lastindex >= 2 else matches.group(1)
+                    # マッチ結果から数値を抽出
+                    if isinstance(match, tuple):
+                        amount_str = match[0]
+                    else:
+                        amount_str = match
                     
+                    # カンマを削除して数値に変換
                     amount_str = amount_str.replace(',', '')
                     amount = float(amount_str)
                     
                     # 妥当な金額範囲かチェック（1円〜1000万円）
                     if 1 <= amount <= 10000000:
-                        return amount
+                        amounts_found.append((amount, pattern))
                 except (ValueError, IndexError):
                     continue
+        
+        # 見つかった金額から最も妥当なものを選択
+        if amounts_found:
+            # 「合計」パターンに一致したものを優先
+            for amount, pattern in amounts_found:
+                if '合計' in pattern or 'TOTAL' in pattern.upper():
+                    return amount
+            
+            # それ以外は最大値を返す（通常、レシートの合計金額は最大値）
+            return max(amounts_found, key=lambda x: x[0])[0]
         
         return None
     
@@ -562,11 +605,20 @@ class ReceiptProcessor:
         tax_included = None
         
         for pattern in TAX_PATTERNS:
-            matches = re.search(pattern, text)
-            if matches:
+            matches = re.findall(pattern, text)
+            for match in matches:
                 try:
-                    tax_type = matches.group(1)
-                    amount_str = matches.group(2)
+                    if isinstance(match, tuple):
+                        if len(match) >= 2:
+                            tax_type = match[0]
+                            amount_str = match[1]
+                        else:
+                            amount_str = match[0]
+                            tax_type = ""
+                    else:
+                        amount_str = match
+                        tax_type = ""
+                    
                     amount_str = amount_str.replace(',', '')
                     amount = float(amount_str)
                     
