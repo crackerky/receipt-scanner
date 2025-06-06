@@ -75,35 +75,38 @@ tesseract_available = setup_tesseract()
 # Date patterns for Japanese receipts (改善版)
 DATE_PATTERNS = [
     # YYYY/MM/DD, YYYY-MM-DD, YYYY年MM月DD日
-    r'(\d{4})[/\-年]([\s]*\d{1,2})[/\-月]([\s]*\d{1,2})',
+    r'(\d{4})[/\-年][\s]*(\d{1,2})[/\-月][\s]*(\d{1,2})',
     # YY/MM/DD, YY-MM-DD, YY年MM月DD日
-    r'(\d{2})[/\-年]([\s]*\d{1,2})[/\-月]([\s]*\d{1,2})',
+    r'(\d{2})[/\-年][\s]*(\d{1,2})[/\-月][\s]*(\d{1,2})',
     # 令和/平成
-    r'令和([\s]*\d{1,2})年([\s]*\d{1,2})月([\s]*\d{1,2})日',
-    r'平成([\s]*\d{1,2})年([\s]*\d{1,2})月([\s]*\d{1,2})日',
+    r'令和[\s]*(\d{1,2})年[\s]*(\d{1,2})月[\s]*(\d{1,2})日',
+    r'平成[\s]*(\d{1,2})年[\s]*(\d{1,2})月[\s]*(\d{1,2})日',
     # MM/DD形式（年なし）
-    r'(\d{1,2})[/\-月]([\s]*\d{1,2})日?',
+    r'(\d{1,2})[/\-月][\s]*(\d{1,2})日?',
     # 2023.05.15形式
-    r'(\d{4})\.([\s]*\d{1,2})\.([\s]*\d{1,2})',
+    r'(\d{4})\.[\s]*(\d{1,2})\.[\s]*(\d{1,2})',
     # 23.05.15形式
-    r'(\d{2})\.([\s]*\d{1,2})\.([\s]*\d{1,2})',
+    r'(\d{2})\.[\s]*(\d{1,2})\.[\s]*(\d{1,2})',
     # スペースが含まれる場合
     r'(\d{4})\s+(\d{1,2})\s+(\d{1,2})',
     # 年月日が漢字で区切られている
     r'(\d{4})年(\d{1,2})月(\d{1,2})日',
     r'(\d{2})年(\d{1,2})月(\d{1,2})日',
+    # 日付っぽいパターン（より柔軟）
+    r'(\d{4})[^\d]*(\d{1,2})[^\d]*(\d{1,2})',
+    r'(\d{2})[^\d]+(\d{1,2})[^\d]+(\d{1,2})',
 ]
 
 # Amount patterns (改善版)
 AMOUNT_PATTERNS = [
     # 合計パターン（様々なバリエーション）
-    r'合\s*計\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'合計\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'計\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'お買上げ合計\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'合\s*計\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'合計\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'計\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'お買上げ合計\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
     # 小計/総額/金額パターン
-    r'(?:小計|総額|金額|お支払い金額)\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'(?:小計|総額|金額|お支払い金額)\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
     # ¥記号付きパターン（全角・半角対応）
     r'[¥￥]\s*(\d{1,3}(?:[,，]\d{3})*)',
@@ -112,31 +115,36 @@ AMOUNT_PATTERNS = [
     r'(\d{1,3}(?:[,，]\d{3})*)\s*円',
     
     # お預かり/お釣りパターン
-    r'お預[かり]*\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'お釣[り]*\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'お預[かり]*\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'お釣[り]*\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
     # TOTAL（英語）パターン
-    r'TOTAL\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'Total\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'TOTAL\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'Total\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
     # 現計/現金パターン
-    r'現[計金]\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'現[計金]\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
-    # 末尾に大きい金額がある場合（最後の手段）
+    # 数字のみのパターン（改善版）
+    r'[¥￥]\s*(\d{3,}(?:[,，]\d{3})*)',
     r'(\d{3,}(?:[,，]\d{3})*)\s*$',
     r'^\s*(\d{3,}(?:[,，]\d{3})*)',
     
     # スペースが含まれる数字
     r'(\d{1,3}(?:\s+\d{3})*)',
+    
+    # より柔軟なパターン
+    r'(\d+[,，]?\d*)\s*円',
+    r'[¥￥]\s*(\d+[,，]?\d*)',
 ]
 
 # Tax patterns
 TAX_PATTERNS = [
-    r'(税抜|税別)\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'(税込)\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'内税\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'消費税\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
-    r'外税\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'(税抜|税別)\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'(税込)\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'内税\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'消費税\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'外税\s*[:：]?\s*[¥￥]?\s*(\d{1,3}(?:[,，]\d{3})*)',
 ]
 
 class ReceiptProcessor:
@@ -195,17 +203,17 @@ class ReceiptProcessor:
         return ChatPromptTemplate.from_template(
             """
             以下は日本のレシートのテキストです。このテキストから以下の情報を抽出してください：
-            1. 日付 (YYYY-MM-DD形式)
+            1. 日付 (YYYY-MM-DD形式、見つからない場合はnull)
             2. 店名または会社名
-            3. 合計金額 (数値のみ)
+            3. 合計金額 (数値のみ、見つからない場合はnull)
             4. 税抜き価格 (あれば、数値のみ)
             5. 税込み価格 (あれば、数値のみ)
             
             JSONフォーマットで回答してください：
             {{
-                "date": "YYYY-MM-DD",
+                "date": "YYYY-MM-DD" or null,
                 "store_name": "店名",
-                "total_amount": 数値,
+                "total_amount": 数値 or null,
                 "tax_excluded_amount": 数値 or null,
                 "tax_included_amount": 数値 or null
             }}
@@ -356,6 +364,14 @@ class ReceiptProcessor:
                     result["message"] += " 日付は現在の日付で補完しました。"
                     logger.info("Date not found in receipt, using current date")
             
+            # デバッグ情報を追加（開発環境のみ）
+            if settings.debug and result["data"]:
+                result["debug_info"] = {
+                    "ocr_text_length": len(text),
+                    "ocr_text_preview": text[:200],
+                    "preprocessing_used": "advanced" if self.cv2_available else "basic"
+                }
+            
             return result
             
         except Exception as e:
@@ -415,19 +431,11 @@ class ReceiptProcessor:
             json_str = json_match.group(0)
             data = json.loads(json_str)
             
-            # Validate required fields
-            missing_fields = []
-            if not data.get("date"):
-                missing_fields.append("日付")
+            # Validate required fields (日付と合計金額は後で補完可能なので必須でない)
             if not data.get("store_name"):
-                missing_fields.append("店名")
-            if not data.get("total_amount"):
-                missing_fields.append("合計金額")
-            
-            if missing_fields:
                 return {
                     "success": False,
-                    "message": f"必要な情報（{', '.join(missing_fields)}）を抽出できませんでした。",
+                    "message": "店名を抽出できませんでした。",
                     "data": None
                 }
             
@@ -435,11 +443,15 @@ class ReceiptProcessor:
             processed_data = {
                 "date": data.get("date"),
                 "store_name": data.get("store_name"),
-                "total_amount": float(data.get("total_amount")),
+                "total_amount": float(data.get("total_amount")) if data.get("total_amount") else None,
                 "tax_excluded_amount": float(data.get("tax_excluded_amount")) if data.get("tax_excluded_amount") else None,
                 "tax_included_amount": float(data.get("tax_included_amount")) if data.get("tax_included_amount") else None,
                 "expense_category": None
             }
+            
+            # 合計金額が抽出できなかった場合の警告
+            if not processed_data["total_amount"]:
+                logger.warning("Total amount not extracted by AI")
             
             return {
                 "success": True,
@@ -489,16 +501,18 @@ class ReceiptProcessor:
             # デバッグログ
             logger.info(f"Regex extraction results - Date: {date_str}, Store: {store_name}, Amount: {total_amount}")
             
-            if missing_fields:
+            # 店名が取れなかった場合はエラー
+            if not store_name:
                 return {
                     "success": False,
-                    "message": f"必要な情報（{', '.join(missing_fields)}）を抽出できませんでした。画像の品質を確認し、再度お試しください。",
+                    "message": "店名を抽出できませんでした。画像の品質を確認してください。",
                     "data": None
                 }
             
+            # 日付と金額が取れなくても成功とする（後で補完可能）
             return {
                 "success": True,
-                "message": "OCR処理でレシート情報を抽出しました。",
+                "message": f"OCR処理でレシート情報を抽出しました。{'（' + '、'.join(missing_fields) + 'は抽出できませんでした）' if missing_fields else ''}",
                 "data": {
                     "date": date_str,
                     "store_name": store_name,
@@ -521,6 +535,9 @@ class ReceiptProcessor:
         """Extract date from receipt text."""
         current_year = datetime.now().year
         
+        # テキストをログに出力して確認
+        logger.debug(f"Searching for date in text: {text[:200]}")
+        
         for pattern in DATE_PATTERNS:
             matches = re.search(pattern, text)
             if matches:
@@ -528,6 +545,8 @@ class ReceiptProcessor:
                     groups = matches.groups()
                     # スペースを削除
                     groups = [g.strip() if isinstance(g, str) else g for g in groups]
+                    
+                    logger.debug(f"Date pattern matched: {pattern}, groups: {groups}")
                     
                     if "令和" in pattern:
                         year = 2018 + int(groups[0])
@@ -553,7 +572,8 @@ class ReceiptProcessor:
                     if 1 <= month <= 12 and 1 <= day <= 31:
                         date_obj = datetime(year, month, day)
                         return date_obj.strftime("%Y-%m-%d")
-                except (ValueError, IndexError):
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Date extraction failed for pattern {pattern}: {e}")
                     continue
         
         return None
@@ -573,6 +593,7 @@ class ReceiptProcessor:
                     # Remove common OCR artifacts
                     cleaned = re.sub(r'[^\w\s\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', '', line)
                     if cleaned and len(cleaned) > 1:
+                        logger.debug(f"Store name candidate: {cleaned}")
                         return cleaned
         
         # Fallback: return first non-empty line
@@ -588,6 +609,9 @@ class ReceiptProcessor:
         
         # テキストを正規化（全角数字を半角に変換）
         normalized_text = text.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+        
+        # デバッグ用
+        logger.debug(f"Searching for amounts in normalized text: {normalized_text[:200]}")
         
         # すべてのパターンでマッチを試みる
         for pattern in AMOUNT_PATTERNS:
@@ -607,6 +631,7 @@ class ReceiptProcessor:
                     # 妥当な金額範囲かチェック（1円〜1000万円）
                     if 1 <= amount <= 10000000:
                         amounts_found.append((amount, pattern))
+                        logger.debug(f"Amount found: {amount} (pattern: {pattern})")
                 except (ValueError, IndexError):
                     continue
         
