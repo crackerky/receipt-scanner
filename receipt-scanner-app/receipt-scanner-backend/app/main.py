@@ -150,6 +150,13 @@ async def health_check():
 @app.get("/api/status")
 async def api_status():
     """API status endpoint with service information."""
+    # Check for HEIF support safely
+    heif_support = False
+    try:
+        heif_support = hasattr(receipt_processor, 'heif_available') and receipt_processor.heif_available
+    except:
+        pass
+    
     return {
         "api_version": "1.0.0",
         "environment": settings.environment,
@@ -157,7 +164,7 @@ async def api_status():
             "openai_processing": settings.openai_available,
             "ocr_fallback": True,
             "rate_limiting": True,
-            "heic_support": receipt_processor.heif_available
+            "heic_support": heif_support
         },
         "limits": {
             "max_requests_per_minute": settings.rate_limit_requests,
@@ -349,12 +356,16 @@ async def debug_receipt(request: Request, file: UploadFile = File(...)):
         from PIL import Image
         import pytesseract
         
-        # HEIC変換を試みる
+        # HEIC変換を試みる（エラーハンドリング追加）
         if len(content) >= 12 and content[4:8] == b'ftyp':
             logger.info("Debug - HEIC format detected, attempting conversion")
-            from app.receipt_processor import ReceiptProcessor
-            processor = ReceiptProcessor()
-            content = processor._convert_heic_to_jpeg(content)
+            try:
+                if hasattr(receipt_processor, '_convert_heic_to_jpeg'):
+                    content = receipt_processor._convert_heic_to_jpeg(content)
+                else:
+                    logger.warning("HEIC conversion method not available")
+            except Exception as e:
+                logger.error(f"HEIC conversion failed: {e}")
         
         # Open and preprocess image
         image = Image.open(io.BytesIO(content))
@@ -385,6 +396,13 @@ async def debug_receipt(request: Request, file: UploadFile = File(...)):
             if matches:
                 amounts_found.extend(matches)
         
+        # Check for heif_available safely
+        heif_available = False
+        try:
+            heif_available = hasattr(receipt_processor, 'heif_available') and receipt_processor.heif_available
+        except:
+            pass
+        
         return {
             "success": True,
             "message": "OCRデバッグ結果",
@@ -395,7 +413,7 @@ async def debug_receipt(request: Request, file: UploadFile = File(...)):
             "openai_available": settings.openai_available,
             "tesseract_available": receipt_processor.tesseract_available,
             "cv2_available": receipt_processor.cv2_available,
-            "heif_available": receipt_processor.heif_available,
+            "heif_available": heif_available,
             "file_info": {
                 "filename": file.filename,
                 "content_type": file.content_type,
@@ -699,7 +717,15 @@ async def startup_event():
     logger.info(f"OpenAI API available: {settings.openai_available}")
     logger.info(f"Debug mode: {settings.debug}")
     logger.info(f"Allowed origins: {allowed_origins}")
-    logger.info(f"HEIF support available: {receipt_processor.heif_available}")
+    
+    # Check for HEIF support safely
+    try:
+        if hasattr(receipt_processor, 'heif_available'):
+            logger.info(f"HEIF support available: {receipt_processor.heif_available}")
+        else:
+            logger.info("HEIF support check not available")
+    except Exception as e:
+        logger.warning(f"Could not check HEIF support: {e}")
 
 # Shutdown event
 @app.on_event("shutdown")
