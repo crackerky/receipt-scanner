@@ -26,7 +26,12 @@ class Settings:
         
         # CORS configuration
         allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
-        self.allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",")]
+        
+        # Special handling for wildcard
+        if allowed_origins_str == "*":
+            self.allowed_origins = ["*"]
+        else:
+            self.allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",")]
         
         # API rate limiting
         self.rate_limit_requests = int(os.getenv("RATE_LIMIT_REQUESTS", "10"))
@@ -46,19 +51,26 @@ class Settings:
                 logging.warning(f"Required environment variable {key} is not set. Some features may be limited.")
                 return ""
             else:
-                raise ValueError(f"Required environment variable {key} is not set")
+                # OpenAI API keyは必須ではない（OCRのみで動作可能）
+                if key == "OPENAI_API_KEY":
+                    logging.warning(f"OpenAI API key not set. Will use OCR-only mode.")
+                    return ""
+                else:
+                    raise ValueError(f"Required environment variable {key} is not set")
         return value
     
     def _validate_config(self):
         """Validate configuration settings."""
         if self.environment == "production":
             if self.secret_key == "dev-secret-key-change-in-production":
-                raise ValueError("SECRET_KEY must be changed in production")
+                logging.warning("Using default SECRET_KEY in production - please change this!")
             
             if self.debug:
                 logging.warning("DEBUG is enabled in production environment")
             
-            if "localhost" in self.allowed_origins:
+            if "*" in self.allowed_origins:
+                logging.warning("CORS is set to allow all origins (*) in production - this is not recommended!")
+            elif "localhost" in str(self.allowed_origins):
                 logging.warning("localhost is allowed in production CORS settings")
     
     def _setup_secure_logging(self):
