@@ -160,7 +160,7 @@ async def api_status():
         },
         "limits": {
             "max_requests_per_minute": settings.rate_limit_requests,
-            "max_file_size_mb": 10
+            "max_file_size_mb": 50
         },
         "cors_enabled": True,
         "allowed_origins_count": len(allowed_origins)
@@ -186,31 +186,37 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
     
-    # Check file extension
-    allowed_extensions = [".jpg", ".jpeg", ".png"]
+    # Check file extension - より多くの形式をサポート
+    allowed_extensions = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".tiff", ".tif"]
     file_ext = file.filename.split(".")[-1].lower()
     if f".{file_ext}" not in allowed_extensions:
-        logger.warning(f"Unsupported file extension: {file_ext}")
-        return JSONResponse(
-            status_code=400,
-            content={
-                "success": False,
-                "message": "サポートされていないファイル形式です。JPEGまたはPNG形式のファイルをアップロードしてください。",
-                "data": None
-            }
-        )
+        # content_typeでも判定
+        allowed_content_types = [
+            "image/jpeg", "image/jpg", "image/png", "image/heic", "image/heif", 
+            "image/webp", "image/bmp", "image/tiff", "application/octet-stream"
+        ]
+        if file.content_type not in allowed_content_types:
+            logger.warning(f"Unsupported file extension: {file_ext}, content_type: {file.content_type}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": f"ファイル形式 '{file_ext}' はサポートされていません。JPEG、PNG、HEIC、WEBP、BMP、TIFF形式のファイルをアップロードしてください。",
+                    "data": None
+                }
+            )
     
-    # Check file size (10MB limit)
+    # Check file size (50MB limit for mobile photos)
     content = await file.read()
     logger.info(f"File content size: {len(content)} bytes")
     
-    if len(content) > 10 * 1024 * 1024:
+    if len(content) > 50 * 1024 * 1024:
         logger.warning(f"File too large: {len(content)} bytes")
         return JSONResponse(
             status_code=400,
             content={
                 "success": False,
-                "message": "ファイルサイズが大きすぎます。10MB以下のファイルをアップロードしてください。",
+                "message": "ファイルサイズが大きすぎます。50MB以下のファイルをアップロードしてください。",
                 "data": None
             }
         )
@@ -267,15 +273,15 @@ async def debug_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
     
-    # Check file extension
-    allowed_extensions = [".jpg", ".jpeg", ".png"]
+    # Check file extension - より多くの形式をサポート
+    allowed_extensions = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".tiff", ".tif"]
     file_ext = file.filename.split(".")[-1].lower()
     if f".{file_ext}" not in allowed_extensions:
         return JSONResponse(
             status_code=400,
             content={
                 "success": False,
-                "message": "サポートされていないファイル形式です。",
+                "message": f"ファイル形式 '{file_ext}' はサポートされていません。",
                 "ocr_text": None
             }
         )
