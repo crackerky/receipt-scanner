@@ -156,14 +156,16 @@ async def api_status():
         "features": {
             "openai_processing": settings.openai_available,
             "ocr_fallback": True,
-            "rate_limiting": True
+            "rate_limiting": True,
+            "heic_support": receipt_processor.heif_available
         },
         "limits": {
             "max_requests_per_minute": settings.rate_limit_requests,
             "max_file_size_mb": 50
         },
         "cors_enabled": True,
-        "allowed_origins_count": len(allowed_origins)
+        "allowed_origins_count": len(allowed_origins),
+        "supported_formats": [".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".tiff", ".tif"]
     }
 
 @app.post("/api/receipts/upload", response_model=ReceiptResponse)
@@ -186,25 +188,45 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
     
-    # Check file extension - より多くの形式をサポート
-    allowed_extensions = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".tiff", ".tif"]
-    file_ext = file.filename.split(".")[-1].lower()
-    if f".{file_ext}" not in allowed_extensions:
-        # content_typeでも判定
-        allowed_content_types = [
-            "image/jpeg", "image/jpg", "image/png", "image/heic", "image/heif", 
-            "image/webp", "image/bmp", "image/tiff", "application/octet-stream"
-        ]
-        if file.content_type not in allowed_content_types:
-            logger.warning(f"Unsupported file extension: {file_ext}, content_type: {file.content_type}")
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "message": f"ファイル形式 '{file_ext}' はサポートされていません。JPEG、PNG、HEIC、WEBP、BMP、TIFF形式のファイルをアップロードしてください。",
-                    "data": None
-                }
-            )
+    # ファイル拡張子を取得（大文字小文字を無視）
+    file_ext = ""
+    if "." in file.filename:
+        file_ext = file.filename.split(".")[-1].lower()
+    
+    logger.info(f"File extension detected: {file_ext}")
+    
+    # より寛容なファイル形式チェック
+    # 拡張子がない場合でも、content-typeで判定
+    allowed_extensions = ["jpg", "jpeg", "png", "heic", "heif", "webp", "bmp", "tiff", "tif", "gif"]
+    allowed_content_types = [
+        "image/jpeg", "image/jpg", "image/png", "image/heic", "image/heif", 
+        "image/webp", "image/bmp", "image/tiff", "image/gif", "application/octet-stream",
+        "image/*"  # ワイルドカードも許可
+    ]
+    
+    # content-typeのチェック（ワイルドカード対応）
+    content_type_valid = any(
+        file.content_type == ct or 
+        (ct.endswith("/*") and file.content_type and file.content_type.startswith(ct[:-2]))
+        for ct in allowed_content_types
+    )
+    
+    # 拡張子とcontent-typeの両方をチェック
+    if file_ext and file_ext not in allowed_extensions and not content_type_valid:
+        logger.warning(f"Unsupported file - extension: {file_ext}, content_type: {file.content_type}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": f"画像ファイルとして認識できません。一般的な画像形式（JPEG, PNG, HEIC, WebP等）のファイルをアップロードしてください。",
+                "data": None,
+                "debug_info": {
+                    "detected_extension": file_ext,
+                    "content_type": file.content_type,
+                    "filename": file.filename
+                } if settings.debug else None
+            }
+        )
     
     # Check file size (50MB limit for mobile photos)
     content = await file.read()
@@ -217,6 +239,18 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             content={
                 "success": False,
                 "message": "ファイルサイズが大きすぎます。50MB以下のファイルをアップロードしてください。",
+                "data": None
+            }
+        )
+    
+    # ファイルが空でないかチェック
+    if len(content) == 0:
+        logger.warning("Empty file uploaded")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": "空のファイルがアップロードされました。有効な画像ファイルを選択してください。",
                 "data": None
             }
         )
@@ -255,6 +289,38 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
 
+@app.post("/api/receipts/file-info")
+async def file_info(file: UploadFile = File(...)):
+    """ファイル情報を確認するデバッグエンドポイント"""
+    content = await file.read()
+    
+    # ファイルヘッダーから形式を推測
+    file_header = content[:12] if len(content) >= 12 else content
+    detected_format = "unknown"
+    
+    if file_header[:3] == b'\xff\xd8\xff':
+        detected_format = "JPEG"
+    elif file_header[:8] == b'\x89PNG\r\n\x1a\n':
+        detected_format = "PNG"
+    elif file_header[4:8] == b'ftyp':
+        detected_format = "HEIC/HEIF"
+    elif file_header[:4] == b'RIFF' and file_header[8:12] == b'WEBP':
+        detected_format = "WebP"
+    elif file_header[:2] == b'BM':
+        detected_format = "BMP"
+    elif file_header[:2] == b'II' or file_header[:2] == b'MM':
+        detected_format = "TIFF"
+    
+    return {
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "file_size": len(content),
+        "detected_extension": file.filename.split(".")[-1].lower() if "." in file.filename else "none",
+        "detected_format": detected_format,
+        "file_header_hex": file_header.hex(),
+        "supported": True  # 基本的にすべてサポート
+    }
+
 @app.post("/api/receipts/debug", response_model=Dict[str, Any])
 @rate_limit()
 async def debug_receipt(request: Request, file: UploadFile = File(...)):
@@ -273,28 +339,26 @@ async def debug_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
     
-    # Check file extension - より多くの形式をサポート
-    allowed_extensions = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".tiff", ".tif"]
-    file_ext = file.filename.split(".")[-1].lower()
-    if f".{file_ext}" not in allowed_extensions:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "success": False,
-                "message": f"ファイル形式 '{file_ext}' はサポートされていません。",
-                "ocr_text": None
-            }
-        )
-    
     # Read file
     content = await file.read()
+    
+    # ファイル情報をログ
+    logger.info(f"Debug - filename: {file.filename}, content_type: {file.content_type}, size: {len(content)}")
     
     try:
         from PIL import Image
         import pytesseract
         
+        # HEIC変換を試みる
+        if len(content) >= 12 and content[4:8] == b'ftyp':
+            logger.info("Debug - HEIC format detected, attempting conversion")
+            from app.receipt_processor import ReceiptProcessor
+            processor = ReceiptProcessor()
+            content = processor._convert_heic_to_jpeg(content)
+        
         # Open and preprocess image
         image = Image.open(io.BytesIO(content))
+        logger.info(f"Debug - Image opened successfully: size={image.size}, mode={image.mode}")
         
         # Basic preprocessing
         if image.mode != 'RGB':
@@ -330,7 +394,13 @@ async def debug_receipt(request: Request, file: UploadFile = File(...)):
             "amounts_found": amounts_found,
             "openai_available": settings.openai_available,
             "tesseract_available": receipt_processor.tesseract_available,
-            "cv2_available": receipt_processor.cv2_available
+            "cv2_available": receipt_processor.cv2_available,
+            "heif_available": receipt_processor.heif_available,
+            "file_info": {
+                "filename": file.filename,
+                "content_type": file.content_type,
+                "size": len(content)
+            }
         }
         
     except Exception as e:
@@ -340,7 +410,8 @@ async def debug_receipt(request: Request, file: UploadFile = File(...)):
             content={
                 "success": False,
                 "message": f"デバッグ処理中にエラーが発生しました: {str(e)}",
-                "ocr_text": None
+                "ocr_text": None,
+                "error_type": type(e).__name__
             }
         )
 
@@ -628,6 +699,7 @@ async def startup_event():
     logger.info(f"OpenAI API available: {settings.openai_available}")
     logger.info(f"Debug mode: {settings.debug}")
     logger.info(f"Allowed origins: {allowed_origins}")
+    logger.info(f"HEIF support available: {receipt_processor.heif_available}")
 
 # Shutdown event
 @app.on_event("shutdown")
