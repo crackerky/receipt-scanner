@@ -75,54 +75,68 @@ tesseract_available = setup_tesseract()
 # Date patterns for Japanese receipts (改善版)
 DATE_PATTERNS = [
     # YYYY/MM/DD, YYYY-MM-DD, YYYY年MM月DD日
-    r'(\d{4})[/\-年](\d{1,2})[/\-月](\d{1,2})',
+    r'(\d{4})[/\-年]([\s]*\d{1,2})[/\-月]([\s]*\d{1,2})',
     # YY/MM/DD, YY-MM-DD, YY年MM月DD日
-    r'(\d{2})[/\-年](\d{1,2})[/\-月](\d{1,2})',
+    r'(\d{2})[/\-年]([\s]*\d{1,2})[/\-月]([\s]*\d{1,2})',
     # 令和/平成
-    r'令和(\d{1,2})年(\d{1,2})月(\d{1,2})日',
-    r'平成(\d{1,2})年(\d{1,2})月(\d{1,2})日',
+    r'令和([\s]*\d{1,2})年([\s]*\d{1,2})月([\s]*\d{1,2})日',
+    r'平成([\s]*\d{1,2})年([\s]*\d{1,2})月([\s]*\d{1,2})日',
     # MM/DD形式（年なし）
-    r'(\d{1,2})[/\-月](\d{1,2})日?',
+    r'(\d{1,2})[/\-月]([\s]*\d{1,2})日?',
     # 2023.05.15形式
-    r'(\d{4})\.(\d{1,2})\.(\d{1,2})',
+    r'(\d{4})\.([\s]*\d{1,2})\.([\s]*\d{1,2})',
     # 23.05.15形式
-    r'(\d{2})\.(\d{1,2})\.(\d{1,2})',
+    r'(\d{2})\.([\s]*\d{1,2})\.([\s]*\d{1,2})',
+    # スペースが含まれる場合
+    r'(\d{4})\s+(\d{1,2})\s+(\d{1,2})',
+    # 年月日が漢字で区切られている
+    r'(\d{4})年(\d{1,2})月(\d{1,2})日',
+    r'(\d{2})年(\d{1,2})月(\d{1,2})日',
 ]
 
 # Amount patterns (改善版)
 AMOUNT_PATTERNS = [
-    # 合計パターン
-    r'合計\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
-    r'合\s*計\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
-    r'計\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    # 合計パターン（様々なバリエーション）
+    r'合\s*計\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'合計\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'計\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'お買上げ合計\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
     # 小計/総額/金額パターン
-    r'(?:小計|総額|金額)\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'(?:小計|総額|金額|お支払い金額)\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
-    # ¥記号付きパターン
-    r'¥\s*(\d{1,3}(?:,\d{3})*)',
+    # ¥記号付きパターン（全角・半角対応）
+    r'[¥￥]\s*(\d{1,3}(?:[,，]\d{3})*)',
     
     # 円付きパターン
-    r'(\d{1,3}(?:,\d{3})*)\s*円',
+    r'(\d{1,3}(?:[,，]\d{3})*)\s*円',
     
-    # お預かり/お釣りパターン（レシートによくある）
-    r'お預かり\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*)',
-    r'お釣り\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*)',
+    # お預かり/お釣りパターン
+    r'お預[かり]*\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'お釣[り]*\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
     # TOTAL（英語）パターン
-    r'TOTAL\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
-    r'Total\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'TOTAL\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'Total\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
     
-    # 大きい数字を優先的に取得（最後の手段）
-    r'(\d{3,}(?:,\d{3})*)',
+    # 現計/現金パターン
+    r'現[計金]\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    
+    # 末尾に大きい金額がある場合（最後の手段）
+    r'(\d{3,}(?:[,，]\d{3})*)\s*$',
+    r'^\s*(\d{3,}(?:[,，]\d{3})*)',
+    
+    # スペースが含まれる数字
+    r'(\d{1,3}(?:\s+\d{3})*)',
 ]
 
 # Tax patterns
 TAX_PATTERNS = [
-    r'(税抜|税別)\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
-    r'(税込)\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
-    r'内税\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
-    r'消費税\s*[:：]?\s*¥?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+    r'(税抜|税別)\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'(税込)\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'内税\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'消費税\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
+    r'外税\s*[:：]?\s*¥?\s*(\d{1,3}(?:[,，]\d{3})*)',
 ]
 
 class ReceiptProcessor:
@@ -511,28 +525,34 @@ class ReceiptProcessor:
             matches = re.search(pattern, text)
             if matches:
                 try:
+                    groups = matches.groups()
+                    # スペースを削除
+                    groups = [g.strip() if isinstance(g, str) else g for g in groups]
+                    
                     if "令和" in pattern:
-                        year = 2018 + int(matches.group(1))
-                        month = int(matches.group(2))
-                        day = int(matches.group(3))
+                        year = 2018 + int(groups[0])
+                        month = int(groups[1])
+                        day = int(groups[2])
                     elif "平成" in pattern:
-                        year = 1988 + int(matches.group(1))
-                        month = int(matches.group(2))
-                        day = int(matches.group(3))
-                    elif len(matches.groups()) == 2:  # MM/DD形式
+                        year = 1988 + int(groups[0])
+                        month = int(groups[1])
+                        day = int(groups[2])
+                    elif len(groups) == 2:  # MM/DD形式
                         year = current_year
-                        month = int(matches.group(1))
-                        day = int(matches.group(2))
+                        month = int(groups[0])
+                        day = int(groups[1])
                     else:
-                        year = int(matches.group(1))
-                        month = int(matches.group(2))
-                        day = int(matches.group(3))
+                        year = int(groups[0])
+                        month = int(groups[1])
+                        day = int(groups[2])
                         
                         if year < 100:
                             year += 2000 if year < 50 else 1900
                     
-                    date_obj = datetime(year, month, day)
-                    return date_obj.strftime("%Y-%m-%d")
+                    # 妥当性チェック
+                    if 1 <= month <= 12 and 1 <= day <= 31:
+                        date_obj = datetime(year, month, day)
+                        return date_obj.strftime("%Y-%m-%d")
                 except (ValueError, IndexError):
                     continue
         
@@ -566,9 +586,12 @@ class ReceiptProcessor:
         """Extract total amount from receipt text."""
         amounts_found = []
         
+        # テキストを正規化（全角数字を半角に変換）
+        normalized_text = text.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+        
         # すべてのパターンでマッチを試みる
         for pattern in AMOUNT_PATTERNS:
-            matches = re.findall(pattern, text, re.IGNORECASE)
+            matches = re.findall(pattern, normalized_text, re.IGNORECASE | re.MULTILINE)
             for match in matches:
                 try:
                     # マッチ結果から数値を抽出
@@ -577,8 +600,8 @@ class ReceiptProcessor:
                     else:
                         amount_str = match
                     
-                    # カンマを削除して数値に変換
-                    amount_str = amount_str.replace(',', '')
+                    # カンマ、全角カンマ、スペースを削除して数値に変換
+                    amount_str = amount_str.replace(',', '').replace('，', '').replace(' ', '')
                     amount = float(amount_str)
                     
                     # 妥当な金額範囲かチェック（1円〜1000万円）
@@ -591,7 +614,7 @@ class ReceiptProcessor:
         if amounts_found:
             # 「合計」パターンに一致したものを優先
             for amount, pattern in amounts_found:
-                if '合計' in pattern or 'TOTAL' in pattern.upper():
+                if '合' in pattern or 'TOTAL' in pattern.upper():
                     return amount
             
             # それ以外は最大値を返す（通常、レシートの合計金額は最大値）
@@ -604,8 +627,11 @@ class ReceiptProcessor:
         tax_excluded = None
         tax_included = None
         
+        # テキストを正規化
+        normalized_text = text.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+        
         for pattern in TAX_PATTERNS:
-            matches = re.findall(pattern, text)
+            matches = re.findall(pattern, normalized_text)
             for match in matches:
                 try:
                     if isinstance(match, tuple):
@@ -619,7 +645,7 @@ class ReceiptProcessor:
                         amount_str = match
                         tax_type = ""
                     
-                    amount_str = amount_str.replace(',', '')
+                    amount_str = amount_str.replace(',', '').replace('，', '').replace(' ', '')
                     amount = float(amount_str)
                     
                     if "税抜" in tax_type or "税別" in tax_type:
