@@ -1,3 +1,101 @@
+// 画像変換ユーティリティ関数
+export async function convertImageToJPEG(file: File): Promise<File> {
+  // すでにJPEGまたはPNGの場合はそのまま返す
+  if (file.type === 'image/jpeg' || file.type === 'image/png') {
+    return file;
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    
+    reader.onload = (event) => {
+      const img = new Image();
+      
+      img.onload = () => {
+        // Canvasを使用して画像を変換
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        if (!ctx) {
+          reject(new Error('Canvas context not available'));
+          return;
+        }
+
+        // 元の画像サイズを維持（ただし最大4000pxに制限）
+        const maxSize = 4000;
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > maxSize || height > maxSize) {
+          const ratio = Math.min(maxSize / width, maxSize / height);
+          width *= ratio;
+          height *= ratio;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        // 白背景を設定（透過画像対策）
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        
+        // 画像を描画
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // CanvasをBlobに変換
+        canvas.toBlob((blob) => {
+          if (blob) {
+            // 新しいFileオブジェクトを作成
+            const convertedFile = new File(
+              [blob], 
+              file.name.replace(/\.[^/.]+$/, '.jpg'), // 拡張子を.jpgに変更
+              { type: 'image/jpeg' }
+            );
+            resolve(convertedFile);
+          } else {
+            reject(new Error('Failed to convert image'));
+          }
+        }, 'image/jpeg', 0.9); // 品質90%のJPEGとして保存
+      };
+      
+      img.onerror = () => {
+        reject(new Error('Failed to load image'));
+      };
+      
+      if (event.target?.result) {
+        img.src = event.target.result as string;
+      }
+    };
+    
+    reader.onerror = () => {
+      reject(new Error('Failed to read file'));
+    };
+    
+    reader.readAsDataURL(file);
+  });
+}
+
+// HEIC to JPEG converter using heic2any library (optional - more reliable)
+export async function convertHEICToJPEG(file: File): Promise<File> {
+  // Check if the file might be HEIC
+  const isHEIC = file.type === 'image/heic' || 
+                 file.type === 'image/heif' || 
+                 file.name.toLowerCase().endsWith('.heic') ||
+                 file.name.toLowerCase().endsWith('.heif');
+  
+  if (!isHEIC) {
+    return file;
+  }
+
+  try {
+    // Use the built-in image conversion first
+    return await convertImageToJPEG(file);
+  } catch (error) {
+    console.error('HEIC conversion failed:', error);
+    throw new Error('HEIC画像の変換に失敗しました。別の形式の画像をお試しください。');
+  }
+}
+
 // API設定とエラーハンドリングを強化
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -64,43 +162,44 @@ export async function uploadReceipt(file: File): Promise<ApiResponse> {
     throw new Error('ファイルが選択されていません。');
   }
 
-  // より寛容なファイルタイプチェック（バックエンドと同じ）
-  const allowedTypes = [
-    'image/jpeg', 
-    'image/jpg', 
-    'image/png', 
-    'image/heic', 
-    'image/heif', 
-    'image/webp', 
-    'image/bmp', 
-    'image/tiff',
-    'image/gif',
-    'application/octet-stream' // 一部のブラウザでHEICファイルがこのタイプになることがある
-  ];
+  console.log('Original file:', {
+    name: file.name,
+    size: file.size,
+    type: file.type
+  });
+
+  // 画像をJPEGに変換（必要な場合）
+  let processedFile = file;
   
-  // MIMEタイプが不明な場合は拡張子でもチェック
-  const fileExtension = file.name.split('.').pop()?.toLowerCase();
-  const allowedExtensions = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp', 'bmp', 'tiff', 'tif', 'gif'];
-  
-  if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension || '')) {
-    console.warn(`Unsupported file type: ${file.type}, extension: ${fileExtension}`);
-    // それでもサーバーに送信してみる（サーバー側で最終判定）
+  try {
+    // HEICまたは非対応形式の場合、JPEGに変換
+    const needsConversion = !['image/jpeg', 'image/png'].includes(file.type) ||
+                          file.name.toLowerCase().endsWith('.heic') ||
+                          file.name.toLowerCase().endsWith('.heif') ||
+                          file.type === 'application/octet-stream';
+    
+    if (needsConversion) {
+      console.log('Converting image to JPEG...');
+      processedFile = await convertImageToJPEG(file);
+      console.log('Converted file:', {
+        name: processedFile.name,
+        size: processedFile.size,
+        type: processedFile.type
+      });
+    }
+  } catch (conversionError) {
+    console.error('Image conversion failed:', conversionError);
+    // 変換に失敗しても元のファイルで試してみる
+    processedFile = file;
   }
 
-  const maxSize = 50 * 1024 * 1024; // 50MB（バックエンドと同じ）
-  if (file.size > maxSize) {
+  const maxSize = 50 * 1024 * 1024; // 50MB
+  if (processedFile.size > maxSize) {
     throw new Error('ファイルサイズが大きすぎます。50MB以下のファイルを選択してください。');
   }
 
-  console.log('Uploading file:', {
-    name: file.name,
-    size: file.size,
-    type: file.type,
-    extension: fileExtension
-  });
-
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append('file', processedFile);
 
   return apiRequest(`${API_URL}/api/receipts/upload`, {
     method: 'POST',
