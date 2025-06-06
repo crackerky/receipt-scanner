@@ -341,11 +341,28 @@ class ReceiptProcessor:
     def process_image(self, image_bytes: bytes) -> Dict[str, Any]:
         """Process receipt image and extract information securely."""
         try:
-            # Validate image
+            # HEIC変換を試みる（検証前に実行）
+            if len(image_bytes) >= 12 and image_bytes[4:8] == b'ftyp':
+                logger.info("HEIC format detected, attempting conversion")
+                try:
+                    if self.heif_available:
+                        image_bytes = self._convert_heic_to_jpeg(image_bytes)
+                        logger.info("HEIC conversion successful")
+                    else:
+                        logger.warning("HEIC conversion not available, attempting to process as-is")
+                except Exception as e:
+                    logger.error(f"HEIC conversion failed: {e}")
+                    return {
+                        "success": False,
+                        "message": "HEIC画像の変換に失敗しました。別の形式の画像をアップロードしてください。",
+                        "data": None
+                    }
+            
+            # Validate image (HEIC変換後に検証)
             if not self._validate_image(image_bytes):
                 return {
                     "success": False,
-                    "message": "無効な画像ファイルです。JPEGまたはPNG形式の画像をアップロードしてください。",
+                    "message": "無効な画像ファイルです。対応している画像形式をアップロードしてください。",
                     "data": None
                 }
             
@@ -356,17 +373,6 @@ class ReceiptProcessor:
                     "message": "OCRエンジンが利用できません。Tesseract OCRをインストールしてください。",
                     "data": None
                 }
-            
-            # HEIC変換を試みる（エラーハンドリング追加）
-            if len(image_bytes) >= 12 and image_bytes[4:8] == b'ftyp':
-                logger.info("HEIC format detected, attempting conversion")
-                try:
-                    if self.heif_available:
-                        image_bytes = self._convert_heic_to_jpeg(image_bytes)
-                    else:
-                        logger.warning("HEIC conversion not available, attempting to process as-is")
-                except Exception as e:
-                    logger.error(f"HEIC conversion failed: {e}")
             
             # Open image
             image = Image.open(io.BytesIO(image_bytes))
@@ -436,12 +442,14 @@ class ReceiptProcessor:
         try:
             image = Image.open(io.BytesIO(image_bytes))
             
-            # Check format
-            if image.format not in ['JPEG', 'PNG']:
+            # Check format - 多くの形式を許可
+            allowed_formats = ['JPEG', 'PNG', 'WEBP', 'BMP', 'TIFF', 'GIF']
+            if image.format and image.format not in allowed_formats:
+                logger.warning(f"Unsupported image format: {image.format}")
                 return False
             
-            # Check size (max 10MB)
-            if len(image_bytes) > 10 * 1024 * 1024:
+            # Check size (max 50MB - main.pyと同じ)
+            if len(image_bytes) > 50 * 1024 * 1024:
                 return False
             
             # Check dimensions (reasonable limits)
@@ -451,7 +459,8 @@ class ReceiptProcessor:
             
             return True
             
-        except Exception:
+        except Exception as e:
+            logger.error(f"Image validation error: {e}")
             return False
     
     def _extract_with_ai(self, text: str) -> Dict[str, Any]:
