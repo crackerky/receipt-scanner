@@ -21,6 +21,14 @@ except ImportError:
     CV2_AVAILABLE = False
     logging.warning("OpenCV not available. Advanced image processing will be disabled.")
 
+# HEIFのインポートを条件付きに
+try:
+    import pyheif
+    HEIF_AVAILABLE = True
+except ImportError:
+    HEIF_AVAILABLE = False
+    logging.warning("pyheif not available. HEIC/HEIF image support will be disabled.")
+
 from app.config import settings
 
 # Configure logging
@@ -155,6 +163,7 @@ class ReceiptProcessor:
         self.openai_available = settings.openai_available
         self.tesseract_available = tesseract_available
         self.cv2_available = CV2_AVAILABLE
+        self.heif_available = HEIF_AVAILABLE
         
         if not self.tesseract_available:
             logger.error("Tesseract OCR is not available. Please install Tesseract OCR.")
@@ -222,6 +231,35 @@ class ReceiptProcessor:
             {text}
             """
         )
+    
+    def _convert_heic_to_jpeg(self, image_bytes: bytes) -> bytes:
+        """Convert HEIC/HEIF image to JPEG format."""
+        if not self.heif_available:
+            raise ValueError("HEIC conversion not available. Please install pyheif.")
+        
+        try:
+            heif_file = pyheif.read(image_bytes)
+            image = Image.frombytes(
+                heif_file.mode, 
+                heif_file.size, 
+                heif_file.data,
+                "raw",
+                heif_file.mode,
+                heif_file.stride,
+            )
+            
+            # Convert to RGB if necessary
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Save as JPEG
+            output = io.BytesIO()
+            image.save(output, format='JPEG', quality=95)
+            return output.getvalue()
+            
+        except Exception as e:
+            logger.error(f"HEIC conversion failed: {e}")
+            raise
     
     def _preprocess_image_advanced(self, image: Image.Image) -> Image.Image:
         """画像の前処理を実施（記事を参考に実装）"""
@@ -318,6 +356,17 @@ class ReceiptProcessor:
                     "message": "OCRエンジンが利用できません。Tesseract OCRをインストールしてください。",
                     "data": None
                 }
+            
+            # HEIC変換を試みる（エラーハンドリング追加）
+            if len(image_bytes) >= 12 and image_bytes[4:8] == b'ftyp':
+                logger.info("HEIC format detected, attempting conversion")
+                try:
+                    if self.heif_available:
+                        image_bytes = self._convert_heic_to_jpeg(image_bytes)
+                    else:
+                        logger.warning("HEIC conversion not available, attempting to process as-is")
+                except Exception as e:
+                    logger.error(f"HEIC conversion failed: {e}")
             
             # Open image
             image = Image.open(io.BytesIO(image_bytes))
