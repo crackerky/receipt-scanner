@@ -136,6 +136,21 @@ async def log_requests(request: Request, call_next):
     
     return response
 
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {
+        "message": "Receipt Scanner API",
+        "version": "1.0.0",
+        "status": "active",
+        "endpoints": {
+            "health": "/healthz",
+            "api_status": "/api/status",
+            "upload": "/api/receipts/upload",
+            "receipts": "/api/receipts"
+        }
+    }
+
 @app.get("/healthz")
 async def health_check():
     """Health check endpoint."""
