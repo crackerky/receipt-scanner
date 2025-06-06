@@ -1,7 +1,7 @@
 # Railway対応のシンプルなDockerfile
 FROM python:3.12-slim
 
-# システム依存関係のインストール（OpenCV追加）
+# システム依存関係のインストール（OpenCV + HEIC対応）
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-jpn \
@@ -21,6 +21,10 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxext6 \
     libgomp1 \
+    # HEIC/HEIF support dependencies
+    libheif-dev \
+    libde265-dev \
+    libx265-dev \
     wget \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
