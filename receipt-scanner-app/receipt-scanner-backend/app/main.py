@@ -249,6 +249,95 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
 
+@app.post("/api/receipts/debug", response_model=Dict[str, Any])
+@rate_limit()
+async def debug_receipt(request: Request, file: UploadFile = File(...)):
+    """Debug endpoint to see OCR output without processing."""
+    
+    logger.info(f"Debug request from: {request.client.host}")
+    
+    # Check file
+    if not file.filename:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": "ファイル名が提供されていません。",
+                "ocr_text": None
+            }
+        )
+    
+    # Check file extension
+    allowed_extensions = [".jpg", ".jpeg", ".png"]
+    file_ext = file.filename.split(".")[-1].lower()
+    if f".{file_ext}" not in allowed_extensions:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": "サポートされていないファイル形式です。",
+                "ocr_text": None
+            }
+        )
+    
+    # Read file
+    content = await file.read()
+    
+    try:
+        from PIL import Image
+        import pytesseract
+        
+        # Open and preprocess image
+        image = Image.open(io.BytesIO(content))
+        
+        # Basic preprocessing
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        image = image.convert('L')  # Grayscale
+        
+        # Run OCR
+        ocr_text = pytesseract.image_to_string(image, lang='jpn+eng')
+        
+        # Also try to extract with regex patterns
+        from app.receipt_processor import DATE_PATTERNS, AMOUNT_PATTERNS
+        import re
+        
+        dates_found = []
+        amounts_found = []
+        
+        for pattern in DATE_PATTERNS:
+            matches = re.findall(pattern, ocr_text)
+            if matches:
+                dates_found.extend(matches)
+        
+        for pattern in AMOUNT_PATTERNS:
+            matches = re.findall(pattern, ocr_text)
+            if matches:
+                amounts_found.extend(matches)
+        
+        return {
+            "success": True,
+            "message": "OCRデバッグ結果",
+            "ocr_text": ocr_text,
+            "ocr_text_length": len(ocr_text),
+            "dates_found": dates_found,
+            "amounts_found": amounts_found,
+            "openai_available": settings.openai_available,
+            "tesseract_available": receipt_processor.tesseract_available,
+            "cv2_available": receipt_processor.cv2_available
+        }
+        
+    except Exception as e:
+        logger.error(f"Debug processing error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"デバッグ処理中にエラーが発生しました: {str(e)}",
+                "ocr_text": None
+            }
+        )
+
 @app.post("/api/receipts/test", response_model=ReceiptResponse)
 async def test_receipt_upload():
     """Test endpoint for receipt upload without file processing."""
