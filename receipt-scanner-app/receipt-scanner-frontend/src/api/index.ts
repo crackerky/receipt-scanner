@@ -64,20 +64,39 @@ export async function uploadReceipt(file: File): Promise<ApiResponse> {
     throw new Error('ファイルが選択されていません。');
   }
 
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg'];
-  if (!allowedTypes.includes(file.type)) {
-    throw new Error('サポートされていないファイル形式です。JPEG または PNG ファイルを選択してください。');
+  // より寛容なファイルタイプチェック（バックエンドと同じ）
+  const allowedTypes = [
+    'image/jpeg', 
+    'image/jpg', 
+    'image/png', 
+    'image/heic', 
+    'image/heif', 
+    'image/webp', 
+    'image/bmp', 
+    'image/tiff',
+    'image/gif',
+    'application/octet-stream' // 一部のブラウザでHEICファイルがこのタイプになることがある
+  ];
+  
+  // MIMEタイプが不明な場合は拡張子でもチェック
+  const fileExtension = file.name.split('.').pop()?.toLowerCase();
+  const allowedExtensions = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp', 'bmp', 'tiff', 'tif', 'gif'];
+  
+  if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension || '')) {
+    console.warn(`Unsupported file type: ${file.type}, extension: ${fileExtension}`);
+    // それでもサーバーに送信してみる（サーバー側で最終判定）
   }
 
-  const maxSize = 10 * 1024 * 1024; // 10MB
+  const maxSize = 50 * 1024 * 1024; // 50MB（バックエンドと同じ）
   if (file.size > maxSize) {
-    throw new Error('ファイルサイズが大きすぎます。10MB以下のファイルを選択してください。');
+    throw new Error('ファイルサイズが大きすぎます。50MB以下のファイルを選択してください。');
   }
 
   console.log('Uploading file:', {
     name: file.name,
     size: file.size,
-    type: file.type
+    type: file.type,
+    extension: fileExtension
   });
 
   const formData = new FormData();
