@@ -1,14 +1,14 @@
 import logging
 import time
 from functools import wraps
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import io
 import csv
 from datetime import datetime
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer
 import psycopg
 
@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(
     title="Receipt Scanner API",
-    description="Secure receipt scanning and processing API",
-    version="1.0.0",
+    description="Secure receipt scanning and processing API with AI-OCR hybrid support",
+    version="2.0.0",
     debug=settings.debug
 )
 
@@ -127,7 +127,7 @@ async def log_requests(request: Request, call_next):
     start_time = time.time()
     
     logger.info(f"Request: {request.method} {request.url}")
-    logger.info(f"Headers: {dict(request.headers)}")
+    logger.debug(f"Headers: {dict(request.headers)}")
     
     response = await call_next(request)
     
@@ -139,15 +139,19 @@ async def log_requests(request: Request, call_next):
 @app.get("/")
 async def root():
     """Root endpoint."""
+    capabilities = receipt_processor.get_processing_capabilities()
+    
     return {
         "message": "Receipt Scanner API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "active",
+        "processing_capabilities": capabilities,
         "endpoints": {
             "health": "/healthz",
             "api_status": "/api/status",
             "upload": "/api/receipts/upload",
-            "receipts": "/api/receipts"
+            "receipts": "/api/receipts",
+            "capabilities": "/api/capabilities"
         }
     }
 
@@ -159,28 +163,27 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat(),
         "environment": settings.environment,
         "openai_available": settings.openai_available,
-        "cors_origins": allowed_origins[:3] if len(allowed_origins) > 3 else allowed_origins,  # セキュリティのため一部のみ表示
+        "cors_origins": allowed_origins[:3] if len(allowed_origins) > 3 else allowed_origins,
     }
 
 @app.get("/api/status")
 async def api_status():
     """API status endpoint with service information."""
-    # Check for HEIF support safely
-    heif_support = False
-    try:
-        heif_support = hasattr(receipt_processor, 'heif_available') and receipt_processor.heif_available
-    except:
-        pass
+    capabilities = receipt_processor.get_processing_capabilities()
     
     return {
-        "api_version": "1.0.0",
+        "api_version": "2.0.0",
         "environment": settings.environment,
         "features": {
-            "openai_processing": settings.openai_available,
-            "ocr_fallback": True,
+            "openai_processing": capabilities["capabilities"]["ai"],
+            "ocr_processing": capabilities["capabilities"]["ocr"],
+            "ai_ocr_hybrid": "ai-ocr-hybrid" in capabilities["available_modes"],
             "rate_limiting": True,
-            "heic_support": heif_support
+            "heic_support": capabilities["capabilities"]["heic_support"],
+            "advanced_image_processing": capabilities["capabilities"]["advanced_image_processing"]
         },
+        "processing_mode": capabilities["processing_mode"],
+        "available_modes": capabilities["available_modes"],
         "limits": {
             "max_requests_per_minute": settings.rate_limit_requests,
             "max_file_size_mb": 50
@@ -190,13 +193,41 @@ async def api_status():
         "supported_formats": [".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".tiff", ".tif"]
     }
 
+@app.get("/api/capabilities")
+async def get_capabilities():
+    """Get detailed processing capabilities."""
+    return receipt_processor.get_processing_capabilities()
+
 @app.post("/api/receipts/upload", response_model=ReceiptResponse)
 @rate_limit()
-async def upload_receipt(request: Request, file: UploadFile = File(...)):
-    """Upload and process a receipt image with security validation."""
+async def upload_receipt(
+    request: Request, 
+    file: UploadFile = File(...),
+    processing_mode: Optional[str] = Query(None, description="Processing mode: 'ai', 'ocr', or 'auto'")
+):
+    """
+    Upload and process a receipt image.
+    
+    Processing modes:
+    - 'ai': Use only AI processing (requires OpenAI API)
+    - 'ocr': Use only OCR processing
+    - 'auto' or None: Use AI-OCR hybrid mode (recommended)
+    """
     
     logger.info(f"Upload request from: {request.client.host}")
-    logger.info(f"File info: name={file.filename}, content_type={file.content_type}, size={file.size if hasattr(file, 'size') else 'unknown'}")
+    logger.info(f"Processing mode requested: {processing_mode}")
+    logger.info(f"File info: name={file.filename}, content_type={file.content_type}")
+    
+    # Validate processing mode
+    if processing_mode and processing_mode not in ["ai", "ocr", "auto"]:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": "無効な処理モードです。'ai', 'ocr', または 'auto' を指定してください。",
+                "data": None
+            }
+        )
     
     # Validate file
     if not file.filename:
@@ -210,37 +241,35 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
     
-    # ファイル拡張子を取得（大文字小文字を無視）
+    # ファイル拡張子を取得
     file_ext = ""
     if "." in file.filename:
         file_ext = file.filename.split(".")[-1].lower()
     
     logger.info(f"File extension detected: {file_ext}")
     
-    # より寛容なファイル形式チェック
-    # 拡張子がない場合でも、content-typeで判定
+    # ファイル形式チェック
     allowed_extensions = ["jpg", "jpeg", "png", "heic", "heif", "webp", "bmp", "tiff", "tif", "gif"]
     allowed_content_types = [
         "image/jpeg", "image/jpg", "image/png", "image/heic", "image/heif", 
         "image/webp", "image/bmp", "image/tiff", "image/gif", "application/octet-stream",
-        "image/*"  # ワイルドカードも許可
+        "image/*"
     ]
     
-    # content-typeのチェック（ワイルドカード対応）
+    # content-typeのチェック
     content_type_valid = any(
         file.content_type == ct or 
         (ct.endswith("/*") and file.content_type and file.content_type.startswith(ct[:-2]))
         for ct in allowed_content_types
     )
     
-    # 拡張子とcontent-typeの両方をチェック
     if file_ext and file_ext not in allowed_extensions and not content_type_valid:
         logger.warning(f"Unsupported file - extension: {file_ext}, content_type: {file.content_type}")
         return JSONResponse(
             status_code=400,
             content={
                 "success": False,
-                "message": f"画像ファイルとして認識できません。一般的な画像形式（JPEG, PNG, HEIC, WebP等）のファイルをアップロードしてください。",
+                "message": "画像ファイルとして認識できません。対応している画像形式をアップロードしてください。",
                 "data": None,
                 "debug_info": {
                     "detected_extension": file_ext,
@@ -250,7 +279,7 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
     
-    # Check file size (50MB limit for mobile photos)
+    # ファイルサイズチェック
     content = await file.read()
     logger.info(f"File content size: {len(content)} bytes")
     
@@ -265,14 +294,13 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             }
         )
     
-    # ファイルが空でないかチェック
     if len(content) == 0:
         logger.warning("Empty file uploaded")
         return JSONResponse(
             status_code=400,
             content={
                 "success": False,
-                "message": "空のファイルがアップロードされました。有効な画像ファイルを選択してください。",
+                "message": "空のファイルがアップロードされました。",
                 "data": None
             }
         )
@@ -280,7 +308,7 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
     try:
         # Process the image
         logger.info("Starting image processing...")
-        result = receipt_processor.process_image(content)
+        result = receipt_processor.process_image(content, processing_mode=processing_mode)
         logger.info(f"Processing result: {result['success']}")
         
         if result["success"]:
@@ -288,7 +316,6 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             receipt_data = result["data"]
             receipt_data["id"] = len(receipts_db) + 1
             receipt_data["created_at"] = datetime.utcnow().isoformat()
-            receipt_data["processed_with"] = "ai" if settings.openai_available else "ocr"
             
             # Store in database
             receipts_db.append(receipt_data)
@@ -305,189 +332,100 @@ async def upload_receipt(request: Request, file: UploadFile = File(...)):
             status_code=500,
             content={
                 "success": False,
-                "message": "画像処理中にサーバーエラーが発生しました。しばらく時間をおいて再度お試しください。",
+                "message": "画像処理中にサーバーエラーが発生しました。",
                 "data": None,
                 "error_details": str(e) if settings.debug else None
             }
         )
 
-@app.post("/api/receipts/file-info")
-async def file_info(file: UploadFile = File(...)):
-    """ファイル情報を確認するデバッグエンドポイント"""
-    content = await file.read()
-    
-    # ファイルヘッダーから形式を推測
-    file_header = content[:12] if len(content) >= 12 else content
-    detected_format = "unknown"
-    
-    if file_header[:3] == b'\xff\xd8\xff':
-        detected_format = "JPEG"
-    elif file_header[:8] == b'\x89PNG\r\n\x1a\n':
-        detected_format = "PNG"
-    elif file_header[4:8] == b'ftyp':
-        detected_format = "HEIC/HEIF"
-    elif file_header[:4] == b'RIFF' and file_header[8:12] == b'WEBP':
-        detected_format = "WebP"
-    elif file_header[:2] == b'BM':
-        detected_format = "BMP"
-    elif file_header[:2] == b'II' or file_header[:2] == b'MM':
-        detected_format = "TIFF"
-    
-    return {
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "file_size": len(content),
-        "detected_extension": file.filename.split(".")[-1].lower() if "." in file.filename else "none",
-        "detected_format": detected_format,
-        "file_header_hex": file_header.hex(),
-        "supported": True  # 基本的にすべてサポート
-    }
-
-@app.post("/api/receipts/debug", response_model=Dict[str, Any])
+@app.post("/api/receipts/analyze", response_model=Dict[str, Any])
 @rate_limit()
-async def debug_receipt(request: Request, file: UploadFile = File(...)):
-    """Debug endpoint to see OCR output without processing."""
+async def analyze_receipt(
+    request: Request,
+    file: UploadFile = File(...),
+    detailed: bool = Query(False, description="Return detailed analysis")
+):
+    """
+    Analyze receipt image and return detailed information without saving.
+    Useful for testing and debugging.
+    """
+    logger.info(f"Analyze request from: {request.client.host}")
     
-    logger.info(f"Debug request from: {request.client.host}")
-    
-    # Check file
-    if not file.filename:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "success": False,
-                "message": "ファイル名が提供されていません。",
-                "ocr_text": None
-            }
-        )
-    
-    # Read file
     content = await file.read()
     
-    # ファイル情報をログ
-    logger.info(f"Debug - filename: {file.filename}, content_type: {file.content_type}, size: {len(content)}")
-    
     try:
-        from PIL import Image
-        import pytesseract
+        # Get detailed analysis
+        capabilities = receipt_processor.get_processing_capabilities()
         
-        # HEIC変換を試みる（エラーハンドリング追加）
-        if len(content) >= 12 and content[4:8] == b'ftyp':
-            logger.info("Debug - HEIC format detected, attempting conversion")
-            try:
-                if hasattr(receipt_processor, '_convert_heic_to_jpeg'):
-                    content = receipt_processor._convert_heic_to_jpeg(content)
-                else:
-                    logger.warning("HEIC conversion method not available")
-            except Exception as e:
-                logger.error(f"HEIC conversion failed: {e}")
+        # Process with all available methods
+        results = {}
         
-        # Open and preprocess image
-        image = Image.open(io.BytesIO(content))
-        logger.info(f"Debug - Image opened successfully: size={image.size}, mode={image.mode}")
+        # OCR analysis
+        if capabilities["capabilities"]["ocr"]:
+            ocr_result = receipt_processor.process_image(content, processing_mode="ocr")
+            results["ocr"] = ocr_result
         
-        # Basic preprocessing
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        image = image.convert('L')  # Grayscale
+        # AI analysis
+        if capabilities["capabilities"]["ai"]:
+            ai_result = receipt_processor.process_image(content, processing_mode="ai")
+            results["ai"] = ai_result
         
-        # Run OCR
-        ocr_text = pytesseract.image_to_string(image, lang='jpn+eng')
-        
-        # Also try to extract with regex patterns
-        from app.receipt_processor import DATE_PATTERNS, AMOUNT_PATTERNS
-        import re
-        
-        dates_found = []
-        amounts_found = []
-        
-        for pattern in DATE_PATTERNS:
-            matches = re.findall(pattern, ocr_text)
-            if matches:
-                dates_found.extend(matches)
-        
-        for pattern in AMOUNT_PATTERNS:
-            matches = re.findall(pattern, ocr_text)
-            if matches:
-                amounts_found.extend(matches)
-        
-        # Check for heif_available safely
-        heif_available = False
-        try:
-            heif_available = hasattr(receipt_processor, 'heif_available') and receipt_processor.heif_available
-        except:
-            pass
+        # Hybrid analysis
+        if "ai-ocr-hybrid" in capabilities["available_modes"]:
+            hybrid_result = receipt_processor.process_image(content, processing_mode="auto")
+            results["hybrid"] = hybrid_result
         
         return {
             "success": True,
-            "message": "OCRデバッグ結果",
-            "ocr_text": ocr_text,
-            "ocr_text_length": len(ocr_text),
-            "dates_found": dates_found,
-            "amounts_found": amounts_found,
-            "openai_available": settings.openai_available,
-            "tesseract_available": receipt_processor.tesseract_available,
-            "cv2_available": receipt_processor.cv2_available,
-            "heif_available": heif_available,
-            "file_info": {
-                "filename": file.filename,
-                "content_type": file.content_type,
-                "size": len(content)
-            }
+            "message": "レシート分析が完了しました。",
+            "capabilities": capabilities,
+            "results": results,
+            "comparison": _compare_results(results) if detailed else None
         }
         
     except Exception as e:
-        logger.error(f"Debug processing error: {e}", exc_info=True)
+        logger.error(f"Error analyzing receipt: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
-                "message": f"デバッグ処理中にエラーが発生しました: {str(e)}",
-                "ocr_text": None,
-                "error_type": type(e).__name__
-            }
-        )
-
-@app.post("/api/receipts/test", response_model=ReceiptResponse)
-async def test_receipt_upload():
-    """Test endpoint for receipt upload without file processing."""
-    try:
-        receipt_data = {
-            "id": len(receipts_db) + 1,
-            "date": "2023-05-15",
-            "store_name": "テストストア",
-            "total_amount": 1500.0,
-            "tax_excluded_amount": 1364.0,
-            "tax_included_amount": None,
-            "expense_category": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "processed_with": "test"
-        }
-        
-        receipts_db.append(receipt_data)
-        
-        logger.info(f"Created test receipt {receipt_data['id']}")
-        
-        return {
-            "success": True,
-            "message": "テストレシート情報を作成しました。",
-            "data": receipt_data
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in test endpoint: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "message": f"テスト処理中にエラーが発生しました: {str(e)}",
+                "message": f"分析中にエラーが発生しました: {str(e)}",
                 "data": None
             }
         )
 
+def _compare_results(results: Dict[str, Any]) -> Dict[str, Any]:
+    """Compare results from different processing methods."""
+    comparison = {
+        "date_consistency": [],
+        "amount_consistency": [],
+        "store_name_consistency": []
+    }
+    
+    for method, result in results.items():
+        if result.get("success") and result.get("data"):
+            data = result["data"]
+            comparison["date_consistency"].append({
+                "method": method,
+                "value": data.get("date")
+            })
+            comparison["amount_consistency"].append({
+                "method": method,
+                "value": data.get("total_amount")
+            })
+            comparison["store_name_consistency"].append({
+                "method": method,
+                "value": data.get("store_name")
+            })
+    
+    return comparison
+
 @app.get("/api/receipts", response_model=ReceiptList)
-async def get_receipts():
-    """Get all receipts with pagination support."""
+async def get_receipts(
+    skip: int = Query(0, ge=0, description="Number of receipts to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of receipts to return")
+):
+    """Get receipts with pagination support."""
     try:
         # Sort by creation date (newest first)
         sorted_receipts = sorted(
@@ -496,9 +434,17 @@ async def get_receipts():
             reverse=True
         )
         
-        logger.info(f"Retrieved {len(sorted_receipts)} receipts")
+        # Apply pagination
+        paginated_receipts = sorted_receipts[skip:skip + limit]
         
-        return {"receipts": sorted_receipts}
+        logger.info(f"Retrieved {len(paginated_receipts)} receipts (skip={skip}, limit={limit})")
+        
+        return {
+            "receipts": paginated_receipts,
+            "total": len(receipts_db),
+            "skip": skip,
+            "limit": limit
+        }
         
     except Exception as e:
         logger.error(f"Error retrieving receipts: {e}")
@@ -532,6 +478,10 @@ async def update_receipt(receipt_id: int, receipt_data: ReceiptData):
         updated_receipt = receipt_data.dict()
         updated_receipt["id"] = receipt_id
         updated_receipt["updated_at"] = datetime.utcnow().isoformat()
+        
+        # Preserve processing info
+        if "processing_info" in receipts_db[receipt_index]:
+            updated_receipt["processing_info"] = receipts_db[receipt_index]["processing_info"]
         
         receipts_db[receipt_index].update(updated_receipt)
         
@@ -569,24 +519,25 @@ async def delete_receipt(receipt_id: int):
         logger.error(f"Error deleting receipt {receipt_id}: {e}")
         raise HTTPException(status_code=500, detail="レシート削除中にエラーが発生しました。")
 
-@app.get("/api/receipts/export")
-async def export_receipts():
-    """Export receipts as CSV with secure filename generation."""
+@app.get("/api/receipts/export/csv")
+async def export_receipts_csv():
+    """Export receipts as CSV."""
     try:
         if not receipts_db:
-            return JSONResponse(
-                status_code=404,
-                content={"message": "エクスポートするデータがありません。"}
-            )
+            raise HTTPException(status_code=404, detail="エクスポートするデータがありません。")
         
         # Create CSV content
         output = io.StringIO()
+        
+        # Extended fieldnames for more detailed export
         fieldnames = [
             "id", "date", "store_name", "total_amount", 
             "tax_excluded_amount", "tax_included_amount", 
-            "expense_category", "created_at", "processed_with"
+            "expense_category", "payment_method", "items_count",
+            "processing_method", "confidence", "created_at", "updated_at"
         ]
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
         
         # Write header in Japanese
         writer.writerow({
@@ -596,100 +547,116 @@ async def export_receipts():
             "total_amount": "合計金額",
             "tax_excluded_amount": "税抜価格",
             "tax_included_amount": "税込価格",
-            "expense_category": "費目タグ",
+            "expense_category": "費目カテゴリー",
+            "payment_method": "支払い方法",
+            "items_count": "商品点数",
+            "processing_method": "処理方法",
+            "confidence": "信頼度",
             "created_at": "作成日時",
-            "processed_with": "処理方法"
+            "updated_at": "更新日時"
         })
         
         # Write data rows
         for receipt in sorted(receipts_db, key=lambda x: x.get("created_at", "")):
-            writer.writerow({
+            row = {
                 "id": receipt.get("id", ""),
                 "date": receipt.get("date", ""),
                 "store_name": receipt.get("store_name", ""),
                 "total_amount": receipt.get("total_amount", ""),
-                "tax_excluded_amount": receipt.get("tax_excluded_amount", "") if receipt.get("tax_excluded_amount") is not None else "",
-                "tax_included_amount": receipt.get("tax_included_amount", "") if receipt.get("tax_included_amount") is not None else "",
-                "expense_category": receipt.get("expense_category", "") if receipt.get("expense_category") is not None else "",
+                "tax_excluded_amount": receipt.get("tax_excluded_amount", ""),
+                "tax_included_amount": receipt.get("tax_included_amount", ""),
+                "expense_category": receipt.get("expense_category", ""),
+                "payment_method": receipt.get("payment_method", ""),
+                "items_count": len(receipt.get("items", [])) if receipt.get("items") else 0,
+                "processing_method": receipt.get("processing_info", {}).get("method", ""),
+                "confidence": receipt.get("combined_confidence", receipt.get("ai_confidence", receipt.get("ocr_confidence", ""))),
                 "created_at": receipt.get("created_at", ""),
-                "processed_with": receipt.get("processed_with", "")
-            })
+                "updated_at": receipt.get("updated_at", "")
+            }
+            writer.writerow(row)
         
+        # Generate CSV content
         csv_content = output.getvalue()
         
-        # Generate secure filename with timestamp
+        # Generate filename with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"receipt_data_{timestamp}.csv"
         
-        headers = {
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Content-Type": "text/csv; charset=utf-8-sig",  # UTF-8 with BOM for Excel compatibility
-        }
-        
-        return JSONResponse(
-            content={"csv_data": csv_content, "filename": filename},
-            headers=headers
+        # Return as streaming response
+        return StreamingResponse(
+            io.StringIO(csv_content),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": "text/csv; charset=utf-8-sig"
+            }
         )
-        
-    except Exception as e:
-        logger.error(f"Error exporting receipts: {e}")
-        raise HTTPException(status_code=500, detail="データエクスポート中にエラーが発生しました。")
-
-@app.delete("/api/receipts")
-async def clear_receipts():
-    """Clear all receipts from memory (development only)."""
-    try:
-        if settings.is_production:
-            raise HTTPException(
-                status_code=403, 
-                detail="本番環境では全データ削除は許可されていません。"
-            )
-        
-        global receipts_db
-        count = len(receipts_db)
-        receipts_db = []
-        
-        logger.info(f"Cleared {count} receipts from memory")
-        
-        return {
-            "success": True,
-            "message": f"{count}件のレシートデータを削除しました。",
-            "data": {"deleted_count": count}
-        }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error clearing receipts: {e}")
-        raise HTTPException(status_code=500, detail="データ削除中にエラーが発生しました。")
+        logger.error(f"Error exporting receipts: {e}")
+        raise HTTPException(status_code=500, detail="データエクスポート中にエラーが発生しました。")
 
 @app.get("/api/stats")
 async def get_statistics():
-    """Get receipt statistics."""
+    """Get enhanced receipt statistics."""
     try:
         if not receipts_db:
             return {
                 "total_receipts": 0,
                 "total_amount": 0,
                 "average_amount": 0,
-                "processing_methods": {}
+                "processing_methods": {},
+                "expense_categories": {},
+                "date_range": None,
+                "confidence_stats": {}
             }
         
         total_receipts = len(receipts_db)
-        total_amount = sum(r.get("total_amount", 0) for r in receipts_db)
+        total_amount = sum(r.get("total_amount", 0) for r in receipts_db if r.get("total_amount"))
         average_amount = total_amount / total_receipts if total_receipts > 0 else 0
         
-        # Count processing methods
+        # Processing methods breakdown
         processing_methods = {}
         for receipt in receipts_db:
-            method = receipt.get("processed_with", "unknown")
+            method = receipt.get("processing_info", {}).get("method", "unknown")
             processing_methods[method] = processing_methods.get(method, 0) + 1
+        
+        # Expense categories breakdown
+        expense_categories = {}
+        for receipt in receipts_db:
+            category = receipt.get("expense_category", "未分類")
+            expense_categories[category] = expense_categories.get(category, 0) + 1
+        
+        # Date range
+        dates = [r.get("date") for r in receipts_db if r.get("date")]
+        date_range = {
+            "earliest": min(dates) if dates else None,
+            "latest": max(dates) if dates else None
+        }
+        
+        # Confidence statistics
+        confidences = []
+        for receipt in receipts_db:
+            conf = receipt.get("combined_confidence") or receipt.get("ai_confidence") or receipt.get("ocr_confidence")
+            if conf is not None:
+                confidences.append(conf)
+        
+        confidence_stats = {
+            "average": sum(confidences) / len(confidences) if confidences else 0,
+            "min": min(confidences) if confidences else 0,
+            "max": max(confidences) if confidences else 0
+        }
         
         return {
             "total_receipts": total_receipts,
             "total_amount": total_amount,
             "average_amount": round(average_amount, 2),
-            "processing_methods": processing_methods
+            "processing_methods": processing_methods,
+            "expense_categories": expense_categories,
+            "date_range": date_range,
+            "confidence_stats": confidence_stats
         }
         
     except Exception as e:
@@ -718,7 +685,7 @@ async def general_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={
             "success": False,
-            "message": "予期しないエラーが発生しました。しばらく時間をおいて再度お試しください。",
+            "message": "予期しないエラーが発生しました。",
             "data": None,
             "error_details": str(exc) if settings.debug else None
         }
@@ -728,19 +695,14 @@ async def general_exception_handler(request: Request, exc: Exception):
 @app.on_event("startup")
 async def startup_event():
     """Application startup event."""
-    logger.info(f"Receipt Scanner API starting up in {settings.environment} mode")
-    logger.info(f"OpenAI API available: {settings.openai_available}")
+    logger.info(f"Receipt Scanner API v2.0.0 starting up in {settings.environment} mode")
+    
+    capabilities = receipt_processor.get_processing_capabilities()
+    logger.info(f"Processing mode: {capabilities['processing_mode']}")
+    logger.info(f"Available modes: {capabilities['available_modes']}")
+    logger.info(f"Capabilities: {capabilities['capabilities']}")
     logger.info(f"Debug mode: {settings.debug}")
     logger.info(f"Allowed origins: {allowed_origins}")
-    
-    # Check for HEIF support safely
-    try:
-        if hasattr(receipt_processor, 'heif_available'):
-            logger.info(f"HEIF support available: {receipt_processor.heif_available}")
-        else:
-            logger.info("HEIF support check not available")
-    except Exception as e:
-        logger.warning(f"Could not check HEIF support: {e}")
 
 # Shutdown event
 @app.on_event("shutdown")
