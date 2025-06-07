@@ -4,8 +4,8 @@ import logging
 import platform
 import subprocess
 from datetime import datetime
-from PIL import Image
-from typing import Dict, Any, Optional
+from PIL import Image, ImageFilter, ImageEnhance
+from typing import Dict, Any, Optional, Tuple
 
 # HEIFのインポートを条件付きに
 try:
@@ -25,6 +25,10 @@ except ImportError:
     logging.warning("OpenCV not available. Advanced image processing will be disabled.")
 
 import pytesseract
+from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate
+from openai import OpenAI
+
 from app.config import settings
 from app.ocr_processor import OCRProcessor
 from app.ai_processor import AIProcessor
@@ -110,6 +114,15 @@ class ReceiptProcessor:
                 logger.error(f"Failed to initialize AI processor: {e}")
                 self.openai_available = False
         
+        # OpenAI Vision API用のクライアント初期化
+        self.openai_client = None
+        if self.openai_available:
+            try:
+                self.openai_client = OpenAI(api_key=settings.openai_api_key)
+                logger.info("OpenAI client initialized for Vision API")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenAI client: {e}")
+        
         # Configure Tesseract if custom path is provided
         if settings.tessdata_prefix:
             os.environ['TESSDATA_PREFIX'] = settings.tessdata_prefix
@@ -173,13 +186,111 @@ class ReceiptProcessor:
             logger.error(f"HEIC conversion failed: {e}")
             raise
     
+    def process_image_with_vision(self, image_bytes: bytes) -> Dict[str, Any]:
+        """OpenAI Vision APIを使用して画像を直接処理"""
+        if not self.openai_client:
+            return {
+                "success": False,
+                "message": "OpenAI Vision APIが利用できません。",
+                "data": None
+            }
+        
+        try:
+            # 画像をbase64エンコード
+            import base64
+            base64_image = base64.b64encode(image_bytes).decode('utf-8')
+            
+            # Vision APIを使用
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": """このレシート画像から以下の情報を抽出してJSON形式で返してください：
+                                1. 日付 (YYYY-MM-DD形式)
+                                2. 店名
+                                3. 合計金額
+                                4. 税抜き価格（あれば）
+                                5. 税込み価格（あれば）
+                                6. 商品明細（商品名と価格のリスト）
+                                7. 支払い方法
+                                
+                                JSONフォーマット:
+                                {
+                                    "date": "YYYY-MM-DD",
+                                    "store_name": "店名",
+                                    "total_amount": 数値,
+                                    "tax_excluded_amount": 数値,
+                                    "tax_included_amount": 数値,
+                                    "items": [{"name": "商品名", "price": 数値}],
+                                    "payment_method": "支払い方法"
+                                }"""
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=1000
+            )
+            
+            # レスポンスをパース
+            content = response.choices[0].message.content
+            import json
+            import re
+            
+            # JSONを抽出
+            json_match = re.search(r'{.*}', content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+                
+                # データの整形
+                processed_data = {
+                    "date": data.get("date"),
+                    "store_name": data.get("store_name"),
+                    "total_amount": float(data.get("total_amount", 0)) if data.get("total_amount") else None,
+                    "tax_excluded_amount": float(data.get("tax_excluded_amount", 0)) if data.get("tax_excluded_amount") else None,
+                    "tax_included_amount": float(data.get("tax_included_amount", 0)) if data.get("tax_included_amount") else None,
+                    "items": data.get("items", []),
+                    "payment_method": data.get("payment_method"),
+                    "expense_category": self._suggest_category(data),
+                    "processing_method": "vision-api"
+                }
+                
+                return {
+                    "success": True,
+                    "message": "Vision APIでレシート情報を抽出しました。",
+                    "data": processed_data
+                }
+            
+            return {
+                "success": False,
+                "message": "Vision APIの応答を解析できませんでした。",
+                "data": None
+            }
+            
+        except Exception as e:
+            logger.error(f"Vision API processing error: {e}")
+            return {
+                "success": False,
+                "message": f"Vision API処理中にエラーが発生しました: {str(e)}",
+                "data": None
+            }
+    
     def process_image(self, image_bytes: bytes, processing_mode: Optional[str] = None) -> Dict[str, Any]:
         """
         レシート画像を処理して情報を抽出
         
         Args:
             image_bytes: 画像データ
-            processing_mode: 処理モード ('ai', 'ocr', 'auto')
+            processing_mode: 処理モード ('ai', 'ocr', 'vision', 'auto')
         """
         try:
             # HEIC変換を試みる
@@ -211,13 +322,21 @@ class ReceiptProcessor:
             if not processing_mode:
                 processing_mode = "auto"
             
+            # Vision APIモードの場合
+            if processing_mode == "vision" and self.openai_client:
+                return self.process_image_with_vision(image_bytes)
+            
             # Tesseractが利用できない場合
             if not self.tesseract_available:
-                return {
-                    "success": False,
-                    "message": "OCRエンジンが利用できません。",
-                    "data": None
-                }
+                # Vision APIが使える場合はそちらを使用
+                if self.openai_client:
+                    return self.process_image_with_vision(image_bytes)
+                else:
+                    return {
+                        "success": False,
+                        "message": "OCRエンジンが利用できません。",
+                        "data": None
+                    }
             
             # 画像を開く
             image = Image.open(io.BytesIO(image_bytes))
@@ -256,6 +375,7 @@ class ReceiptProcessor:
                     "method": result.get("processing_method", "unknown"),
                     "ocr_available": self.tesseract_available,
                     "ai_available": self.openai_available,
+                    "vision_available": bool(self.openai_client),
                     "cv2_available": self.cv2_available,
                     "heif_support": self.heif_available
                 }
@@ -333,18 +453,45 @@ class ReceiptProcessor:
             logger.error(f"Image validation error: {e}")
             return False
     
+    def _suggest_category(self, data: Dict[str, Any]) -> Optional[str]:
+        """店名や商品情報から費目カテゴリーを提案"""
+        store_name = data.get("store_name", "").lower()
+        
+        # カテゴリー判定ルール
+        categories = {
+            "食費": ["スーパー", "コンビニ", "ファミリーマート", "セブンイレブン", "ローソン", 
+                   "イオン", "マルエツ", "レストラン", "食堂", "カフェ"],
+            "交通費": ["jr", "駅", "バス", "タクシー", "suica", "pasmo", "交通"],
+            "日用品": ["ドラッグストア", "薬局", "ダイソー", "100均", "ホームセンター"],
+            "書籍": ["書店", "本屋", "ブックオフ", "紀伊國屋"],
+            "娯楽費": ["映画", "カラオケ", "ゲーム", "アミューズメント"],
+            "医療費": ["病院", "クリニック", "薬局", "調剤"],
+            "光熱費": ["電気", "ガス", "水道", "電力", "東京電力", "東京ガス"],
+            "通信費": ["ドコモ", "au", "ソフトバンク", "携帯", "インターネット"],
+        }
+        
+        for category, keywords in categories.items():
+            for keyword in keywords:
+                if keyword in store_name:
+                    return category
+        
+        return None
+    
     def get_processing_capabilities(self) -> Dict[str, Any]:
         """現在の処理能力を返す"""
+        available_modes = self._get_available_modes()
+        
         return {
             "processing_mode": self.processing_mode,
             "capabilities": {
                 "ocr": self.tesseract_available,
                 "ai": self.openai_available,
+                "vision": bool(self.openai_client),
                 "advanced_image_processing": self.cv2_available,
                 "heic_support": self.heif_available
             },
-            "available_modes": self._get_available_modes(),
-            "recommended_mode": "ai-ocr-hybrid" if self.openai_available else "ocr"
+            "available_modes": available_modes,
+            "recommended_mode": self._get_recommended_mode(available_modes)
         }
     
     def _get_available_modes(self) -> list:
@@ -354,5 +501,20 @@ class ReceiptProcessor:
             modes.append("ocr")
         if self.openai_available:
             modes.append("ai")
-            modes.append("ai-ocr-hybrid")
+            if self.tesseract_available:
+                modes.append("ai-ocr-hybrid")
+        if self.openai_client:
+            modes.append("vision")
         return modes
+    
+    def _get_recommended_mode(self, available_modes: list) -> str:
+        """推奨される処理モード"""
+        if "vision" in available_modes:
+            return "vision"
+        elif "ai-ocr-hybrid" in available_modes:
+            return "ai-ocr-hybrid"
+        elif "ai" in available_modes:
+            return "ai"
+        elif "ocr" in available_modes:
+            return "ocr"
+        return "unavailable"
