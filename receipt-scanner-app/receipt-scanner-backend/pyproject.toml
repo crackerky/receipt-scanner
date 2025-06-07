@@ -16,6 +16,8 @@ langchain-openai = "^0.3.16"
 python-dotenv = "^1.1.0"
 langchain = "^0.3.25"
 pillow-heif = "^0.16.0"  # HEIC/HEIF support for iPhone photos
+pydantic = "^2.5.0"  # For data validation
+python-dateutil = "^2.8.2"  # For date parsing
 
 # Optional dependencies for advanced image processing
 [tool.poetry.group.cv]
