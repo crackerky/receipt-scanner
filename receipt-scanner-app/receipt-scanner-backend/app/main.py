@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(
     title="Receipt Scanner API",
-    description="Secure receipt scanning and processing API with AI-OCR hybrid support",
-    version="2.0.0",
+    description="Secure receipt scanning and processing API with AI-OCR hybrid and Vision API support",
+    version="2.1.0",
     debug=settings.debug
 )
 
@@ -143,7 +143,7 @@ async def root():
     
     return {
         "message": "Receipt Scanner API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "active",
         "processing_capabilities": capabilities,
         "endpoints": {
@@ -172,11 +172,12 @@ async def api_status():
     capabilities = receipt_processor.get_processing_capabilities()
     
     return {
-        "api_version": "2.0.0",
+        "api_version": "2.1.0",
         "environment": settings.environment,
         "features": {
             "openai_processing": capabilities["capabilities"]["ai"],
             "ocr_processing": capabilities["capabilities"]["ocr"],
+            "vision_api": capabilities["capabilities"]["vision"],
             "ai_ocr_hybrid": "ai-ocr-hybrid" in capabilities["available_modes"],
             "rate_limiting": True,
             "heic_support": capabilities["capabilities"]["heic_support"],
@@ -184,6 +185,7 @@ async def api_status():
         },
         "processing_mode": capabilities["processing_mode"],
         "available_modes": capabilities["available_modes"],
+        "recommended_mode": capabilities["recommended_mode"],
         "limits": {
             "max_requests_per_minute": settings.rate_limit_requests,
             "max_file_size_mb": 50
@@ -203,15 +205,16 @@ async def get_capabilities():
 async def upload_receipt(
     request: Request, 
     file: UploadFile = File(...),
-    processing_mode: Optional[str] = Query(None, description="Processing mode: 'ai', 'ocr', or 'auto'")
+    processing_mode: Optional[str] = Query(None, description="Processing mode: 'ai', 'ocr', 'vision', or 'auto'")
 ):
     """
     Upload and process a receipt image.
     
     Processing modes:
-    - 'ai': Use only AI processing (requires OpenAI API)
+    - 'vision': Use OpenAI Vision API (highest accuracy, requires OpenAI API)
+    - 'ai': Use AI with OCR text (requires OpenAI API)
     - 'ocr': Use only OCR processing
-    - 'auto' or None: Use AI-OCR hybrid mode (recommended)
+    - 'auto' or None: Automatically select best available mode
     """
     
     logger.info(f"Upload request from: {request.client.host}")
@@ -219,12 +222,12 @@ async def upload_receipt(
     logger.info(f"File info: name={file.filename}, content_type={file.content_type}")
     
     # Validate processing mode
-    if processing_mode and processing_mode not in ["ai", "ocr", "auto"]:
+    if processing_mode and processing_mode not in ["ai", "ocr", "vision", "auto"]:
         return JSONResponse(
             status_code=400,
             content={
                 "success": False,
-                "message": "無効な処理モードです。'ai', 'ocr', または 'auto' を指定してください。",
+                "message": "無効な処理モードです。'ai', 'ocr', 'vision', または 'auto' を指定してください。",
                 "data": None
             }
         )
@@ -369,6 +372,11 @@ async def analyze_receipt(
         if capabilities["capabilities"]["ai"]:
             ai_result = receipt_processor.process_image(content, processing_mode="ai")
             results["ai"] = ai_result
+        
+        # Vision API analysis
+        if capabilities["capabilities"]["vision"]:
+            vision_result = receipt_processor.process_image(content, processing_mode="vision")
+            results["vision"] = vision_result
         
         # Hybrid analysis
         if "ai-ocr-hybrid" in capabilities["available_modes"]:
@@ -568,7 +576,7 @@ async def export_receipts_csv():
                 "expense_category": receipt.get("expense_category", ""),
                 "payment_method": receipt.get("payment_method", ""),
                 "items_count": len(receipt.get("items", [])) if receipt.get("items") else 0,
-                "processing_method": receipt.get("processing_info", {}).get("method", ""),
+                "processing_method": receipt.get("processing_info", {}).get("method", receipt.get("processing_method", "")),
                 "confidence": receipt.get("combined_confidence", receipt.get("ai_confidence", receipt.get("ocr_confidence", ""))),
                 "created_at": receipt.get("created_at", ""),
                 "updated_at": receipt.get("updated_at", "")
@@ -620,7 +628,7 @@ async def get_statistics():
         # Processing methods breakdown
         processing_methods = {}
         for receipt in receipts_db:
-            method = receipt.get("processing_info", {}).get("method", "unknown")
+            method = receipt.get("processing_info", {}).get("method", receipt.get("processing_method", "unknown"))
             processing_methods[method] = processing_methods.get(method, 0) + 1
         
         # Expense categories breakdown
@@ -695,12 +703,13 @@ async def general_exception_handler(request: Request, exc: Exception):
 @app.on_event("startup")
 async def startup_event():
     """Application startup event."""
-    logger.info(f"Receipt Scanner API v2.0.0 starting up in {settings.environment} mode")
+    logger.info(f"Receipt Scanner API v2.1.0 starting up in {settings.environment} mode")
     
     capabilities = receipt_processor.get_processing_capabilities()
     logger.info(f"Processing mode: {capabilities['processing_mode']}")
     logger.info(f"Available modes: {capabilities['available_modes']}")
     logger.info(f"Capabilities: {capabilities['capabilities']}")
+    logger.info(f"Recommended mode: {capabilities['recommended_mode']}")
     logger.info(f"Debug mode: {settings.debug}")
     logger.info(f"Allowed origins: {allowed_origins}")
 
