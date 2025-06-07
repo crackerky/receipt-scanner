@@ -4,9 +4,18 @@
 
 AIとOCRを活用した日本語レシート処理システムです。APIキーの安全な管理とセキュリティを最優先に設計されています。
 
-## 🆕 新機能
+## 🆕 新機能 (v2.0.0)
 
-### ✨ 最新アップデート (2025.06.05)
+### ✨ AI-OCR ハイブリッド処理 (2025.06.07)
+- **🤖 AI-OCR統合処理**: OpenAIとTesseract OCRを組み合わせた高精度な処理
+- **🔄 処理モード選択**: AI、OCR、ハイブリッドモードを選択可能
+- **📊 詳細分析機能**: 複数の処理方法で結果を比較・分析
+- **🎯 信頼度スコア**: 抽出結果の信頼度を数値化
+- **🏷️ 自動カテゴリー分類**: 店名から費目カテゴリーを自動推定
+- **📝 商品明細抽出**: レシートから個別商品情報を抽出
+- **💳 支払い方法認識**: 現金、クレジット、電子マネーなどを識別
+
+### ✨ 既存機能 (2025.06.05)
 - **🔍 OCR処理の大幅改善**: 画像前処理（ノイズ除去、コントラスト調整、二値化）を追加
 - **📝 レシート編集機能**: アップロード済みレシートの情報を後から編集可能
 - **🗑️ レシート削除機能**: 間違えてアップロードしたレシートを削除可能
@@ -67,6 +76,7 @@ OPENAI_API_KEY=sk-your-actual-openai-api-key
 DATABASE_URL=postgresql://user:pass@host:5432/dbname
 SECRET_KEY=your-jwt-secret-key
 VITE_API_URL=https://your-api-domain.com
+OPENAI_MODEL=gpt-4-turbo-preview  # 使用するAIモデル
 ```
 
 ### 3. ローカル開発環境
@@ -108,127 +118,58 @@ npm run dev
 
 ## 📱 主な機能
 
+### AI-OCR ハイブリッド処理
+- **処理モード選択**: アップロード時に処理モードを選択可能
+  - `ai`: OpenAI APIのみを使用（高精度だが要APIキー）
+  - `ocr`: Tesseract OCRのみを使用（無料だが精度は中程度）
+  - `auto`: AI-OCRハイブリッド（推奨 - 両方の良いところを活用）
+- **信頼度表示**: 抽出結果の信頼度をパーセンテージで表示
+- **詳細分析**: 複数の処理方法で結果を比較可能
+
 ### レシートアップロード
 - 画像から自動的に店名、日付、金額を抽出
 - 日付が読み取れない場合は自動的に現在の日付を設定
 - AI（OpenAI）またはOCR（Tesseract）で処理
 - 画像前処理により認識精度を向上
+- 商品明細の抽出（AI使用時）
+- 支払い方法の認識（AI使用時）
 
 ### レシート管理
 - **編集**: レシート一覧から編集ボタン（✏️）をクリック
 - **削除**: レシート一覧から削除ボタン（🗑️）をクリック
-- **CSV出力**: 全レシートデータをCSV形式でエクスポート
+- **CSV出力**: 全レシートデータをCSV形式でエクスポート（拡張版）
+- **ページネーション**: 大量のレシートを効率的に管理
 
 ### データ分析
 - 費目別の支出をグラフで可視化
 - カテゴリー別の経費集計
+- 処理方法別の統計情報
+- 信頼度スコアの統計
 
-## 🔍 OCRトラブルシューティング
-
-### OCRが動作しない場合
-
-#### 1. Tesseractの確認
-```bash
-# インストール確認
-tesseract --version
-
-# 言語データ確認
-tesseract --list-langs
-
-# 日本語データが表示されない場合
-sudo apt-get install tesseract-ocr-jpn  # Ubuntu/Debian
-brew install tesseract-lang              # macOS
-```
-
-#### 2. OCRテストスクリプトの実行
-```bash
-cd receipt-scanner-app/receipt-scanner-backend
-python test_ocr.py test_receipt.jpg
-```
-
-#### 3. よくあるエラーと対処法
-
-**TesseractNotFoundError**
-```bash
-# Tesseractがインストールされていません
-# 上記のインストール手順を実行してください
-```
-
-**言語データエラー**
-```
-Failed loading language 'jpn'
-```
-解決策: 日本語データをインストール
-```bash
-sudo apt-get install tesseract-ocr-jpn
-```
-
-**画像品質の問題**
-- 画像が暗い、ぼやけている → より明るく鮮明な画像を使用
-- 傾いている → アプリが自動補正しますが、できるだけ正面から撮影
-- 小さすぎる → 最低でも1000x1000ピクセル以上推奨
-
-#### 4. ログの確認
-```bash
-# バックエンドのログを確認
-poetry run uvicorn app.main:app --reload --port 8000 --log-level debug
-```
-
-デバッグログで以下を確認:
-- `Tesseract found at: [パス]`
-- `Available Tesseract languages: ['eng', 'jpn', ...]`
-- `OCR extracted text length: [文字数]`
-
-## 🌐 デプロイメント
-
-### Netlify (フロントエンド推奨)
-
-#### 方法1: 自動デプロイ（推奨）
-
-1. **Netlifyダッシュボードにアクセス**
-2. **"New site from Git"をクリック**
-3. **GitHubリポジトリを選択**
-4. **ビルド設定は自動検出** (netlify.tomlで設定済み)
-5. **環境変数を設定**:
-   ```
-   VITE_API_URL = https://your-backend-api-url.com
-   ```
-6. **Deploy siteをクリック**
-
-### Railway (バックエンド推奨)
-
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway variables set OPENAI_API_KEY=sk-your-key
-railway variables set ENVIRONMENT=production
-railway up
-```
-
-### Docker での実行
-
-```bash
-# バックエンドのみ
-cd receipt-scanner-app/receipt-scanner-backend
-docker build -t receipt-scanner-backend .
-docker run -p 8000:8000 \
-  -e OPENAI_API_KEY="your-api-key" \
-  receipt-scanner-backend
-```
-
-## 📊 API エンドポイント
+## 🔍 API エンドポイント (v2.0.0)
 
 | エンドポイント | メソッド | 説明 | レート制限 |
 |----------------|----------|------|------------|
+| `/` | GET | ルートエンドポイント（処理能力情報を含む） | なし |
 | `/healthz` | GET | ヘルスチェック | なし |
-| `/api/status` | GET | システム状態 | なし |
-| `/api/receipts/upload` | POST | レシートアップロード | ✅ |
-| `/api/receipts` | GET | レシート一覧 | なし |
+| `/api/status` | GET | 詳細なシステム状態 | なし |
+| `/api/capabilities` | GET | 処理能力の詳細情報 | なし |
+| `/api/receipts/upload` | POST | レシートアップロード（モード選択可） | ✅ |
+| `/api/receipts/analyze` | POST | レシート分析（保存なし） | ✅ |
+| `/api/receipts` | GET | レシート一覧（ページネーション対応） | なし |
+| `/api/receipts/{id}` | GET | 特定のレシート取得 | なし |
 | `/api/receipts/{id}` | PUT | レシート更新 | なし |
 | `/api/receipts/{id}` | DELETE | レシート削除 | なし |
-| `/api/receipts/export` | GET | CSV エクスポート | なし |
-| `/api/stats` | GET | 統計情報 | なし |
+| `/api/receipts/export/csv` | GET | CSV エクスポート（拡張版） | なし |
+| `/api/stats` | GET | 拡張統計情報 | なし |
+
+### アップロードパラメータ
+`/api/receipts/upload` エンドポイントで使用可能:
+- `file`: アップロードする画像ファイル（必須）
+- `processing_mode`: 処理モード（オプション）
+  - `"ai"`: AIのみ使用
+  - `"ocr"`: OCRのみ使用
+  - `"auto"` または省略: AI-OCRハイブリッド
 
 **API ドキュメント**: `http://localhost:8000/docs`
 
@@ -239,7 +180,8 @@ docker run -p 8000:8000 \
 **バックエンド:**
 | 変数名 | 必須 | デフォルト | 説明 |
 |--------|------|------------|------|
-| `OPENAI_API_KEY` | ✅ | - | OpenAI APIキー |
+| `OPENAI_API_KEY` | ❌ | - | OpenAI APIキー（AI処理に必要） |
+| `OPENAI_MODEL` | ❌ | `gpt-4-turbo-preview` | 使用するAIモデル |
 | `ENVIRONMENT` | ❌ | `development` | 実行環境 |
 | `DEBUG` | ❌ | `true` | デバッグモード |
 | `RATE_LIMIT_REQUESTS` | ❌ | `10` | レート制限リクエスト数 |
@@ -310,3 +252,10 @@ MIT License - see [LICENSE](LICENSE) file for details.
 **🔒 重要**: このアプリケーションはAPIキーなどの機密情報を安全に管理するために設計されています。セキュリティガイドラインに従って使用してください。
 
 **💡 サポート**: 問題が発生した場合は [Issues](https://github.com/crackerky/receipt-scanner/issues) を確認するか、新しいIssueを作成してください。
+
+**🎯 v2.0.0の主な改善点**:
+- AI-OCRハイブリッド処理による精度向上
+- 処理モード選択による柔軟性の向上
+- 詳細な分析機能の追加
+- 信頼度スコアによる品質管理
+- 拡張されたCSVエクスポート機能
