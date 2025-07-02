@@ -7,7 +7,10 @@ Railwayのダッシュボードで以下の環境変数を設定してくださ�
 ```
 OPENAI_API_KEY=sk-your-actual-api-key
 ENVIRONMENT=production
+DISABLE_AUTH=true
 ```
+
+**注意**: `DISABLE_AUTH=true`は一時的な設定です。本格運用時は認証機能を有効にしてください。
 
 ## 重要な環境変数（CORS設定）
 
