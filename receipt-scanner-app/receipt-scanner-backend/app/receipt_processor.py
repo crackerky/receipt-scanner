@@ -84,7 +84,6 @@ def setup_tesseract():
 # Tesseractのセットアップ
 tesseract_available = setup_tesseract()
 
-
 class ReceiptProcessor:
     """統合されたレシート処理クラス - AI-OCRの協調処理"""
     
