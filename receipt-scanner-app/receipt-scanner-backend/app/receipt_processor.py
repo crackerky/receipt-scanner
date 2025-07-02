@@ -87,8 +87,7 @@ def setup_tesseract():
 tesseract_available = setup_tesseract()
 
 class ReceiptProcessor:
-"""Secure receipt processing with AI-OCR Vision and fallback OCR functionality."""
-
+    """Secure receipt processing with AI-OCR Vision and fallback OCR functionality."""
     
     def __init__(self):
         """Initialize the receipt processor with secure configuration."""
