@@ -25,6 +25,17 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # HTTP Bearer scheme
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
+
+def create_fake_test_user() -> User:
+    """Create a fake test user for development purposes."""
+    return User(
+        id=9999,
+        username="test_user",
+        email="test@example.com",
+        is_active=True,
+        hashed_password=get_password_hash("test_password")
+    )
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
@@ -125,3 +136,20 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
     if not current_user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
+
+async def get_current_active_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_security),
+    db: Session = Depends(get_db)
+) -> User:
+    """
+    Get current active user with optional authentication.
+    If DISABLE_AUTH is true, returns a fake test user.
+    """
+    # Check if auth is disabled
+    if settings.disable_auth:
+        logger.warning("Authentication is disabled - using test user")
+        return create_fake_test_user()
+    
+    # If auth is enabled, use normal authentication
+    return await get_current_active_user(credentials, db)
+
