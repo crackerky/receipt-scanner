@@ -107,10 +107,6 @@ interface ApiResponse<T = any> {
   data: T | null;
 }
 
-interface ExportResponse {
-  csv_data: string;
-}
-
 class ApiError extends Error {
   constructor(public status: number, public data: any) {
     super(`API Error: ${status}`);
