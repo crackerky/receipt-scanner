@@ -228,19 +228,25 @@ export async function updateReceipt(receiptId: number, data: any): Promise<ApiRe
 }
 
 export async function exportReceipts(): Promise<string> {
-  const response = await apiRequest<ExportResponse>(`${API_URL}/api/receipts/export`);
-  
-  // Properly access csv_data from the response
-  if (response.data && 'csv_data' in response.data) {
-    return response.data.csv_data;
+  try {
+    const response = await fetch(`${API_URL}/api/receipts/export/csv`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'text/csv',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Export failed: ${response.status}`);
+    }
+
+    // Get the CSV content directly from the response
+    const csvContent = await response.text();
+    return csvContent;
+  } catch (error) {
+    console.error('Export error:', error);
+    throw error;
   }
-  
-  // Fallback for backward compatibility
-  if (response.data && typeof response.data === 'string') {
-    return response.data;
-  }
-  
-  return '';
 }
 
 export async function testUploadReceipt(): Promise<ApiResponse> {

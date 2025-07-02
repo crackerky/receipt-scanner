@@ -40,6 +40,9 @@ class Settings:
         # JWT configuration
         self.jwt_expire_minutes = int(os.getenv("JWT_EXPIRE_MINUTES", "30"))
         
+        # Authentication bypass for development
+        self.disable_auth = os.getenv("DISABLE_AUTH", "false").lower() == "true"
+        
         # Validate configuration
         self._validate_config()
         

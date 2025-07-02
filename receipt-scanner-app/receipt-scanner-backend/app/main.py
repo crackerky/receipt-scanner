@@ -21,7 +21,7 @@ from app.models import ReceiptData, ReceiptResponse, ReceiptList
 from app.receipt_processor import ReceiptProcessor
 from app.database import get_db, engine, Base
 from app.db_models import Receipt as ReceiptDB, User
-from app.auth import get_current_active_user
+from app.auth import get_current_active_user, get_current_active_user_optional
 from app.auth_routes import router as auth_router
 
 # Configure logging
@@ -222,7 +222,7 @@ async def upload_receipt(
     file: UploadFile = File(...),
     processing_mode: Optional[str] = Query(None, description="Processing mode: 'ai', 'ocr', 'vision', or 'auto'"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """
     Upload and process a receipt image.
@@ -391,7 +391,7 @@ async def analyze_receipt(
     request: Request,
     file: UploadFile = File(...),
     detailed: bool = Query(False, description="Return detailed analysis"),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """
     Analyze receipt image and return detailed information without saving.
@@ -478,7 +478,7 @@ async def get_receipts(
     skip: int = Query(0, ge=0, description="Number of receipts to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of receipts to return"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """Get receipts with pagination support."""
     try:
@@ -512,7 +512,7 @@ async def get_receipts(
 async def get_receipt(
     receipt_id: int, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """Get a specific receipt by ID."""
     try:
@@ -537,7 +537,7 @@ async def update_receipt(
     receipt_id: int, 
     receipt_data: ReceiptData, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """Update a specific receipt."""
     try:
@@ -576,7 +576,7 @@ async def update_receipt(
 async def delete_receipt(
     receipt_id: int, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """Delete a specific receipt."""
     try:
@@ -614,7 +614,7 @@ async def delete_receipt(
 @app.get("/api/receipts/export/csv")
 async def export_receipts_csv(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """Export receipts as CSV."""
     try:
@@ -700,7 +700,7 @@ async def export_receipts_csv(
 @app.get("/api/stats")
 async def get_statistics(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """Get enhanced receipt statistics."""
     try:
@@ -773,7 +773,7 @@ async def get_statistics(
 async def get_receipt_image(
     receipt_id: int, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_optional)
 ):
     """Get the original image for a receipt."""
     try:
