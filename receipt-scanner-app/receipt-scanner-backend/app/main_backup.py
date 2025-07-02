@@ -4,25 +4,17 @@ from functools import wraps
 from typing import Dict, Any, List, Optional
 import io
 import csv
-import os
-import shutil
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer
-from sqlalchemy.orm import Session
 import psycopg
 
 from app.config import settings
 from app.models import ReceiptData, ReceiptResponse, ReceiptList
 from app.receipt_processor import ReceiptProcessor
-from app.database import get_db, engine, Base
-from app.db_models import Receipt as ReceiptDB, User
-from app.auth import get_current_active_user
-from app.auth_routes import router as auth_router
 
 # Configure logging
 logging.basicConfig(
@@ -35,12 +27,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Receipt Scanner API",
     description="Secure receipt scanning and processing API with AI-OCR hybrid and Vision API support",
-    version="2.2.0",
+    version="2.1.0",
     debug=settings.debug
 )
-
-# Include authentication routes
-app.include_router(auth_router)
 
 # 開発環境用の追加CORS設定
 development_origins = [
@@ -75,12 +64,8 @@ app.add_middleware(
 receipt_processor = ReceiptProcessor()
 security = HTTPBearer(auto_error=False)
 
-# Create receipts_images directory for storing uploaded images
-UPLOAD_DIR = Path("receipts_images")
-UPLOAD_DIR.mkdir(exist_ok=True)
-
-# Create database tables on startup
-Base.metadata.create_all(bind=engine)
+# In-memory storage (replace with database in production)
+receipts_db: List[Dict[str, Any]] = []
 
 # Rate limiting storage
 rate_limit_storage: Dict[str, List[float]] = {}
@@ -220,9 +205,7 @@ async def get_capabilities():
 async def upload_receipt(
     request: Request, 
     file: UploadFile = File(...),
-    processing_mode: Optional[str] = Query(None, description="Processing mode: 'ai', 'ocr', 'vision', or 'auto'"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    processing_mode: Optional[str] = Query(None, description="Processing mode: 'ai', 'ocr', 'vision', or 'auto'")
 ):
     """
     Upload and process a receipt image.
@@ -332,42 +315,15 @@ async def upload_receipt(
         logger.info(f"Processing result: {result['success']}")
         
         if result["success"]:
+            # Add unique ID and timestamp
             receipt_data = result["data"]
+            receipt_data["id"] = len(receipts_db) + 1
+            receipt_data["created_at"] = datetime.utcnow().isoformat()
             
-            # Create database record
-            db_receipt = ReceiptDB(
-                store_name=receipt_data.get("store_name", "Unknown"),
-                purchase_date=receipt_data.get("date", datetime.utcnow()),
-                total_amount=receipt_data.get("total_amount", 0.0),
-                category=receipt_data.get("expense_category"),
-                items=receipt_data.get("items"),
-                payment_method=receipt_data.get("payment_method"),
-                tax_amount=receipt_data.get("tax_amount"),
-                processing_mode=result.get("processing_mode", processing_mode or "auto"),
-                confidence_score=result.get("confidence_score"),
-                ocr_text=result.get("ocr_text"),
-                user_id=current_user.id
-            )
+            # Store in database
+            receipts_db.append(receipt_data)
             
-            # Save image file
-            if content:
-                image_filename = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
-                image_path = UPLOAD_DIR / image_filename
-                with open(image_path, "wb") as f:
-                    f.write(content)
-                db_receipt.image_path = str(image_path)
-            
-            # Save to database
-            db.add(db_receipt)
-            db.commit()
-            db.refresh(db_receipt)
-            
-            # Update result with database ID
-            receipt_data["id"] = db_receipt.id
-            receipt_data["created_at"] = db_receipt.created_at.isoformat() if db_receipt.created_at else None
-            receipt_data["image_path"] = db_receipt.image_path
-            
-            logger.info(f"Successfully processed and saved receipt {db_receipt.id}")
+            logger.info(f"Successfully processed receipt {receipt_data['id']}")
         else:
             logger.warning(f"Processing failed: {result['message']}")
         
@@ -390,8 +346,7 @@ async def upload_receipt(
 async def analyze_receipt(
     request: Request,
     file: UploadFile = File(...),
-    detailed: bool = Query(False, description="Return detailed analysis"),
-    current_user: User = Depends(get_current_active_user)
+    detailed: bool = Query(False, description="Return detailed analysis")
 ):
     """
     Analyze receipt image and return detailed information without saving.
@@ -476,30 +431,25 @@ def _compare_results(results: Dict[str, Any]) -> Dict[str, Any]:
 @app.get("/api/receipts", response_model=ReceiptList)
 async def get_receipts(
     skip: int = Query(0, ge=0, description="Number of receipts to skip"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of receipts to return"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of receipts to return")
 ):
     """Get receipts with pagination support."""
     try:
-        # Query receipts from database (only user's receipts)
-        query = db.query(ReceiptDB).filter(
-            ReceiptDB.is_deleted == False,
-            ReceiptDB.user_id == current_user.id
+        # Sort by creation date (newest first)
+        sorted_receipts = sorted(
+            receipts_db, 
+            key=lambda x: x.get("created_at", ""), 
+            reverse=True
         )
-        total = query.count()
         
-        # Sort by creation date (newest first) and apply pagination
-        receipts = query.order_by(ReceiptDB.created_at.desc()).offset(skip).limit(limit).all()
+        # Apply pagination
+        paginated_receipts = sorted_receipts[skip:skip + limit]
         
-        # Convert to response format
-        receipts_data = [receipt.to_dict() for receipt in receipts]
-        
-        logger.info(f"Retrieved {len(receipts)} receipts (skip={skip}, limit={limit})")
+        logger.info(f"Retrieved {len(paginated_receipts)} receipts (skip={skip}, limit={limit})")
         
         return {
-            "receipts": receipts_data,
-            "total": total,
+            "receipts": paginated_receipts,
+            "total": len(receipts_db),
             "skip": skip,
             "limit": limit
         }
@@ -509,22 +459,14 @@ async def get_receipts(
         raise HTTPException(status_code=500, detail="レシート一覧の取得中にエラーが発生しました。")
 
 @app.get("/api/receipts/{receipt_id}")
-async def get_receipt(
-    receipt_id: int, 
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
+async def get_receipt(receipt_id: int):
     """Get a specific receipt by ID."""
     try:
-        receipt = db.query(ReceiptDB).filter(
-            ReceiptDB.id == receipt_id, 
-            ReceiptDB.is_deleted == False,
-            ReceiptDB.user_id == current_user.id
-        ).first()
+        receipt = next((r for r in receipts_db if r["id"] == receipt_id), None)
         if not receipt:
             raise HTTPException(status_code=404, detail="指定されたレシートが見つかりません。")
         
-        return {"receipt": receipt.to_dict()}
+        return {"receipt": receipt}
         
     except HTTPException:
         raise
@@ -533,37 +475,28 @@ async def get_receipt(
         raise HTTPException(status_code=500, detail="レシート取得中にエラーが発生しました。")
 
 @app.put("/api/receipts/{receipt_id}")
-async def update_receipt(
-    receipt_id: int, 
-    receipt_data: ReceiptData, 
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
+async def update_receipt(receipt_id: int, receipt_data: ReceiptData):
     """Update a specific receipt."""
     try:
-        receipt = db.query(ReceiptDB).filter(
-            ReceiptDB.id == receipt_id, 
-            ReceiptDB.is_deleted == False,
-            ReceiptDB.user_id == current_user.id
-        ).first()
-        if not receipt:
+        receipt_index = next((i for i, r in enumerate(receipts_db) if r["id"] == receipt_id), None)
+        if receipt_index is None:
             raise HTTPException(status_code=404, detail="指定されたレシートが見つかりません。")
         
         # Update receipt data
-        update_data = receipt_data.dict(exclude_unset=True)
-        for field, value in update_data.items():
-            if hasattr(receipt, field):
-                setattr(receipt, field, value)
+        updated_receipt = receipt_data.dict()
+        updated_receipt["id"] = receipt_id
+        updated_receipt["updated_at"] = datetime.utcnow().isoformat()
         
-        receipt.updated_at = datetime.utcnow()
+        # Preserve processing info
+        if "processing_info" in receipts_db[receipt_index]:
+            updated_receipt["processing_info"] = receipts_db[receipt_index]["processing_info"]
         
-        db.commit()
-        db.refresh(receipt)
+        receipts_db[receipt_index].update(updated_receipt)
         
         return {
             "success": True,
             "message": "レシート情報を更新しました。",
-            "data": receipt.to_dict()
+            "data": receipts_db[receipt_index]
         }
         
     except HTTPException:
@@ -573,31 +506,14 @@ async def update_receipt(
         raise HTTPException(status_code=500, detail="レシート更新中にエラーが発生しました。")
 
 @app.delete("/api/receipts/{receipt_id}")
-async def delete_receipt(
-    receipt_id: int, 
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
+async def delete_receipt(receipt_id: int):
     """Delete a specific receipt."""
     try:
-        receipt = db.query(ReceiptDB).filter(
-            ReceiptDB.id == receipt_id, 
-            ReceiptDB.is_deleted == False,
-            ReceiptDB.user_id == current_user.id
-        ).first()
-        if not receipt:
+        receipt_index = next((i for i, r in enumerate(receipts_db) if r["id"] == receipt_id), None)
+        if receipt_index is None:
             raise HTTPException(status_code=404, detail="指定されたレシートが見つかりません。")
         
-        # Soft delete
-        receipt.is_deleted = True
-        db.commit()
-        
-        # Delete image file if exists
-        if receipt.image_path and os.path.exists(receipt.image_path):
-            try:
-                os.remove(receipt.image_path)
-            except Exception as e:
-                logger.warning(f"Failed to delete image file: {e}")
+        deleted_receipt = receipts_db.pop(receipt_index)
         
         return {
             "success": True,
@@ -612,17 +528,10 @@ async def delete_receipt(
         raise HTTPException(status_code=500, detail="レシート削除中にエラーが発生しました。")
 
 @app.get("/api/receipts/export/csv")
-async def export_receipts_csv(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
+async def export_receipts_csv():
     """Export receipts as CSV."""
     try:
-        receipts = db.query(ReceiptDB).filter(
-            ReceiptDB.is_deleted == False,
-            ReceiptDB.user_id == current_user.id
-        ).order_by(ReceiptDB.created_at.desc()).all()
-        if not receipts:
+        if not receipts_db:
             raise HTTPException(status_code=404, detail="エクスポートするデータがありません。")
         
         # Create CSV content
@@ -656,21 +565,21 @@ async def export_receipts_csv(
         })
         
         # Write data rows
-        for receipt in receipts:
+        for receipt in sorted(receipts_db, key=lambda x: x.get("created_at", "")):
             row = {
-                "id": receipt.id,
-                "date": receipt.purchase_date.strftime("%Y-%m-%d") if receipt.purchase_date else "",
-                "store_name": receipt.store_name or "",
-                "total_amount": receipt.total_amount or 0,
-                "tax_excluded_amount": "",  # Not stored separately in DB
-                "tax_included_amount": receipt.total_amount or 0,
-                "expense_category": receipt.category or "",
-                "payment_method": receipt.payment_method or "",
-                "items_count": len(receipt.items) if receipt.items else 0,
-                "processing_method": receipt.processing_mode or "",
-                "confidence": receipt.confidence_score or "",
-                "created_at": receipt.created_at.strftime("%Y-%m-%d %H:%M:%S") if receipt.created_at else "",
-                "updated_at": receipt.updated_at.strftime("%Y-%m-%d %H:%M:%S") if receipt.updated_at else ""
+                "id": receipt.get("id", ""),
+                "date": receipt.get("date", ""),
+                "store_name": receipt.get("store_name", ""),
+                "total_amount": receipt.get("total_amount", ""),
+                "tax_excluded_amount": receipt.get("tax_excluded_amount", ""),
+                "tax_included_amount": receipt.get("tax_included_amount", ""),
+                "expense_category": receipt.get("expense_category", ""),
+                "payment_method": receipt.get("payment_method", ""),
+                "items_count": len(receipt.get("items", [])) if receipt.get("items") else 0,
+                "processing_method": receipt.get("processing_info", {}).get("method", receipt.get("processing_method", "")),
+                "confidence": receipt.get("combined_confidence", receipt.get("ai_confidence", receipt.get("ocr_confidence", ""))),
+                "created_at": receipt.get("created_at", ""),
+                "updated_at": receipt.get("updated_at", "")
             }
             writer.writerow(row)
         
@@ -698,18 +607,10 @@ async def export_receipts_csv(
         raise HTTPException(status_code=500, detail="データエクスポート中にエラーが発生しました。")
 
 @app.get("/api/stats")
-async def get_statistics(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
+async def get_statistics():
     """Get enhanced receipt statistics."""
     try:
-        receipts = db.query(ReceiptDB).filter(
-            ReceiptDB.is_deleted == False,
-            ReceiptDB.user_id == current_user.id
-        ).all()
-        
-        if not receipts:
+        if not receipts_db:
             return {
                 "total_receipts": 0,
                 "total_amount": 0,
@@ -720,34 +621,35 @@ async def get_statistics(
                 "confidence_stats": {}
             }
         
-        total_receipts = len(receipts)
-        total_amount = sum(r.total_amount for r in receipts if r.total_amount)
+        total_receipts = len(receipts_db)
+        total_amount = sum(r.get("total_amount", 0) for r in receipts_db if r.get("total_amount"))
         average_amount = total_amount / total_receipts if total_receipts > 0 else 0
         
         # Processing methods breakdown
         processing_methods = {}
-        for receipt in receipts:
-            method = receipt.processing_mode or "unknown"
+        for receipt in receipts_db:
+            method = receipt.get("processing_info", {}).get("method", receipt.get("processing_method", "unknown"))
             processing_methods[method] = processing_methods.get(method, 0) + 1
         
         # Expense categories breakdown
         expense_categories = {}
-        for receipt in receipts:
-            category = receipt.category or "未分類"
+        for receipt in receipts_db:
+            category = receipt.get("expense_category", "未分類")
             expense_categories[category] = expense_categories.get(category, 0) + 1
         
         # Date range
-        dates = [r.purchase_date for r in receipts if r.purchase_date]
+        dates = [r.get("date") for r in receipts_db if r.get("date")]
         date_range = {
-            "earliest": min(dates).strftime("%Y-%m-%d") if dates else None,
-            "latest": max(dates).strftime("%Y-%m-%d") if dates else None
+            "earliest": min(dates) if dates else None,
+            "latest": max(dates) if dates else None
         }
         
         # Confidence statistics
         confidences = []
-        for receipt in receipts:
-            if receipt.confidence_score is not None:
-                confidences.append(receipt.confidence_score)
+        for receipt in receipts_db:
+            conf = receipt.get("combined_confidence") or receipt.get("ai_confidence") or receipt.get("ocr_confidence")
+            if conf is not None:
+                confidences.append(conf)
         
         confidence_stats = {
             "average": sum(confidences) / len(confidences) if confidences else 0,
@@ -768,39 +670,6 @@ async def get_statistics(
     except Exception as e:
         logger.error(f"Error getting statistics: {e}")
         raise HTTPException(status_code=500, detail="統計情報取得中にエラーが発生しました。")
-
-@app.get("/api/receipts/{receipt_id}/image")
-async def get_receipt_image(
-    receipt_id: int, 
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
-    """Get the original image for a receipt."""
-    try:
-        receipt = db.query(ReceiptDB).filter(
-            ReceiptDB.id == receipt_id, 
-            ReceiptDB.is_deleted == False,
-            ReceiptDB.user_id == current_user.id
-        ).first()
-        if not receipt:
-            raise HTTPException(status_code=404, detail="指定されたレシートが見つかりません。")
-        
-        if not receipt.image_path or not os.path.exists(receipt.image_path):
-            raise HTTPException(status_code=404, detail="レシート画像が見つかりません。")
-        
-        return FileResponse(
-            receipt.image_path,
-            media_type="image/jpeg",
-            headers={
-                "Content-Disposition": f"inline; filename=receipt_{receipt_id}.jpg"
-            }
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving receipt image {receipt_id}: {e}")
-        raise HTTPException(status_code=500, detail="画像取得中にエラーが発生しました。")
 
 # Error handlers
 @app.exception_handler(HTTPException)

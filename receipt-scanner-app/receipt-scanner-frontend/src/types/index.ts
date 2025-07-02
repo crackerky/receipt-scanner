@@ -9,6 +9,12 @@ export interface ReceiptData {
   created_at?: string;
   updated_at?: string;
   processed_with?: string;
+  image_path?: string | null;
+  image_url?: string | null;
+  processing_mode?: string;
+  confidence_score?: number;
+  items?: Array<{name: string; price: number}>;
+  payment_method?: string;
 }
 
 export interface ReceiptResponse {

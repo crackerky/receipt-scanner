@@ -5,7 +5,7 @@ import { Card } from './components/ui/card';
 import { Progress } from './components/ui/progress';
 import { Alert, AlertDescription } from './components/ui/alert';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend } from 'recharts';
-import { uploadReceipt, getReceipts, exportReceipts, testUploadReceipt, healthCheck, getApiStatus, deleteReceipt, updateReceipt } from './api';
+import { uploadReceipt, getReceipts, exportReceipts, testUploadReceipt, healthCheck, getApiStatus, deleteReceipt, updateReceipt, getReceiptImageUrl } from './api';
 import { ReceiptData } from './types';
 import './App.css';
 
@@ -450,6 +450,29 @@ function App() {
         <div className="flex-1 overflow-auto p-4">
           <Card className="p-4">
             <div className="space-y-4">
+              {/* レシート画像表示 */}
+              {currentReceipt.id && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">レシート画像</label>
+                  <div className="border rounded-md overflow-hidden">
+                    <img
+                      src={getReceiptImageUrl(currentReceipt.id)}
+                      alt="Receipt"
+                      className="w-full max-w-md mx-auto object-contain"
+                      style={{ maxHeight: '400px' }}
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.style.display = 'none';
+                        target.nextElementSibling?.classList.remove('hidden');
+                      }}
+                    />
+                    <div className="hidden p-4 text-center text-gray-500">
+                      画像を読み込めませんでした
+                    </div>
+                  </div>
+                </div>
+              )}
+              
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   日付
@@ -578,6 +601,25 @@ function App() {
           <div className="divide-y">
             {receipts.map((receipt) => (
               <div key={receipt.id} className="p-4 hover:bg-gray-50 flex items-center">
+                {/* サムネイル画像 */}
+                {receipt.id && (
+                  <div className="mr-3 flex-shrink-0">
+                    <img
+                      src={getReceiptImageUrl(receipt.id)}
+                      alt="Receipt thumbnail"
+                      className="w-12 h-12 rounded-md object-cover border"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.style.display = 'none';
+                        target.nextElementSibling?.classList.remove('hidden');
+                      }}
+                    />
+                    <div className="hidden w-12 h-12 rounded-md border bg-gray-100 flex items-center justify-center">
+                      <span className="text-xs text-gray-400">画像</span>
+                    </div>
+                  </div>
+                )}
+                
                 <div className="flex-1">
                   <div className="flex justify-between items-start">
                     <div>

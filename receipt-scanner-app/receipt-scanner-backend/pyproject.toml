@@ -19,6 +19,10 @@ pillow-heif = "^0.16.0"  # HEIC/HEIF support for iPhone photos
 pydantic = "^2.5.0"  # For data validation
 python-dateutil = "^2.8.2"  # For date parsing
 openai = "^1.0.0"  # For Vision API
+sqlalchemy = "^2.0.23"  # Database ORM
+alembic = "^1.13.0"  # Database migrations
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}  # JWT tokens
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}  # Password hashing
 
 # Optional dependencies for advanced image processing
 [tool.poetry.group.cv]
