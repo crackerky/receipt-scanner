@@ -41,6 +41,9 @@ class Settings:
         self.rate_limit_requests = int(os.getenv("RATE_LIMIT_REQUESTS", "10"))
         self.rate_limit_window = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
         
+        # JWT configuration
+        self.jwt_expire_minutes = int(os.getenv("JWT_EXPIRE_MINUTES", "30"))
+        
         # Validate configuration
         self._validate_config()
         
