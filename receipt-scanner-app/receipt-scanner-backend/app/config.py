@@ -17,6 +17,10 @@ class Settings:
         # Required environment variables
         self.openai_api_key = self._get_required_env("OPENAI_API_KEY")
         
+        # Vision API settings
+        self.use_vision_api = os.getenv("USE_VISION_API", "true").lower() == "true"
+        self.vision_api_model = os.getenv("VISION_API_MODEL", "gpt-4o")  # or "gpt-4o-mini"
+        
         # Optional environment variables with defaults
         self.database_url = os.getenv("DATABASE_URL", "postgresql://localhost:5432/receipt_scanner")
         self.secret_key = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
@@ -111,6 +115,11 @@ class Settings:
     def openai_available(self) -> bool:
         """Check if OpenAI API is available."""
         return bool(self.openai_api_key)
+    
+    @property
+    def vision_api_available(self) -> bool:
+        """Check if Vision API is available and enabled."""
+        return bool(self.openai_api_key) and self.use_vision_api
 
 # Global settings instance
 settings = Settings()

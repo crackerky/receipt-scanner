@@ -3,9 +3,11 @@ import io
 import logging
 import platform
 import subprocess
+import base64
 from datetime import datetime
 from PIL import Image, ImageFilter, ImageEnhance
 from typing import Dict, Any, Optional, Tuple
+from openai import OpenAI
 
 # HEIFのインポートを条件付きに
 try:
@@ -86,22 +88,37 @@ tesseract_available = setup_tesseract()
 
 
 class ReceiptProcessor:
-    """統合されたレシート処理クラス - AI-OCRの協調処理"""
+"""Secure receipt processing with AI-OCR Vision and fallback OCR functionality."""
+
     
     def __init__(self):
         """Initialize the receipt processor with secure configuration."""
         self.openai_available = settings.openai_available
+        self.vision_api_available = settings.vision_api_available
         self.tesseract_available = tesseract_available
         self.cv2_available = CV2_AVAILABLE
         self.heif_available = HEIF_AVAILABLE
         
-        # 処理モード設定
-        self.processing_mode = self._determine_processing_mode()
+
         
         # OCRプロセッサーの初期化
         self.ocr_processor = OCRProcessor(cv2_available=self.cv2_available)
         
-        # AIプロセッサーの初期化
+        # AIプロセッサーの初期化        # 処理モード設定
+        self.processing_mode = self._determine_processing_mode()
+
+        # Initialize OpenAI client for Vision API
+        if self.vision_api_available:
+            try:
+                self.openai_client = OpenAI(api_key=settings.openai_api_key)
+                logger.info("OpenAI Vision API initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenAI Vision API: {e}")
+                self.vision_api_available = False
+        
+        if not self.tesseract_available:
+            logger.error("Tesseract OCR is not available. Please install Tesseract OCR.")
+
         self.ai_processor = None
         if self.openai_available:
             try:
@@ -157,6 +174,139 @@ class ReceiptProcessor:
         except Exception as e:
             logger.error(f"Failed to get Tesseract languages: {e}")
     
+    def _create_prompt_template(self) -> ChatPromptTemplate:
+        """Create a secure prompt template for OpenAI."""
+        return ChatPromptTemplate.from_template(
+            """
+            以下は日本のレシートのテキストです。このテキストから以下の情報を抽出してください：
+            1. 日付 (YYYY-MM-DD形式、見つからない場合はnull)
+            2. 店名または会社名
+            3. 合計金額 (数値のみ、見つからない場合はnull)
+            4. 税抜き価格 (あれば、数値のみ)
+            5. 税込み価格 (あれば、数値のみ)
+            
+            JSONフォーマットで回答してください：
+            {{
+                "date": "YYYY-MM-DD" or null,
+                "store_name": "店名",
+                "total_amount": 数値 or null,
+                "tax_excluded_amount": 数値 or null,
+                "tax_included_amount": 数値 or null
+            }}
+            
+            レシートテキスト:
+            {text}
+            """
+        )
+    
+    def _create_vision_prompt(self) -> str:
+        """Create a prompt for Vision API OCR."""
+        return """
+        この画像は日本のレシートです。以下の情報を正確に抽出してください：
+        
+        1. 日付 (YYYY-MM-DD形式、見つからない場合はnull)
+        2. 店名または会社名
+        3. 合計金額 (数値のみ、見つからない場合はnull)
+        4. 税抜き価格 (あれば、数値のみ)
+        5. 税込み価格 (あれば、数値のみ)
+        
+        以下のJSONフォーマットで回答してください：
+        {
+            "date": "YYYY-MM-DD" or null,
+            "store_name": "店名",
+            "total_amount": 数値 or null,
+            "tax_excluded_amount": 数値 or null,
+            "tax_included_amount": 数値 or null
+        }
+        
+        注意事項：
+        - 日付は必ずYYYY-MM-DD形式に変換してください
+        - 金額は数値のみ（カンマや円記号は除く）
+        - 税抜き/税込み価格が明記されていない場合はnull
+        - 不明な情報はnullとしてください
+        """
+    
+    def _extract_with_vision_api(self, image_bytes: bytes) -> Dict[str, Any]:
+        """Extract receipt information using GPT-4o Vision API."""
+        try:
+            # Convert image to base64
+            base64_image = base64.b64encode(image_bytes).decode('utf-8')
+            
+            logger.info("Sending image to Vision API for OCR...")
+            
+            # Call Vision API
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o",  # or "gpt-4o-mini" for cost savings
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": self._create_vision_prompt()
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}",
+                                    "detail": "high"  # Use "high" for better OCR accuracy
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=1000,
+                response_format={"type": "json_object"}  # Ensure JSON response
+            )
+            
+            # Parse the response
+            result_text = response.choices[0].message.content
+            logger.info(f"Vision API response: {result_text}")
+            
+            # Parse JSON response
+            data = json.loads(result_text)
+            
+            # Validate and process the data
+            processed_data = {
+                "date": data.get("date"),
+                "store_name": data.get("store_name"),
+                "total_amount": float(data.get("total_amount")) if data.get("total_amount") else None,
+                "tax_excluded_amount": float(data.get("tax_excluded_amount")) if data.get("tax_excluded_amount") else None,
+                "tax_included_amount": float(data.get("tax_included_amount")) if data.get("tax_included_amount") else None,
+                "expense_category": None
+            }
+            
+            # Validate required fields
+            if not processed_data.get("store_name"):
+                return {
+                    "success": False,
+                    "message": "Vision APIで店名を抽出できませんでした。",
+                    "data": None
+                }
+            
+            logger.info("Successfully extracted receipt data with Vision API")
+            
+            return {
+                "success": True,
+                "message": "AI-OCR (Vision API)でレシート情報を抽出しました。",
+                "data": processed_data
+            }
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from Vision API response: {e}")
+            return {
+                "success": False,
+                "message": "Vision APIのレスポンスが無効でした。",
+                "data": None
+            }
+        except Exception as e:
+            logger.error(f"Vision API extraction error: {e}")
+            return {
+                "success": False,
+                "message": f"Vision API処理中にエラーが発生しました: {str(e)}",
+                "data": None
+            }
+
     def _convert_heic_to_jpeg(self, image_bytes: bytes) -> bytes:
         """Convert HEIC/HEIF image to JPEG format."""
         if not self.heif_available:
@@ -321,6 +471,29 @@ class ReceiptProcessor:
             # 処理モードの決定
             if not processing_mode:
                 processing_mode = "auto"
+
+            # Try Vision API first if available
+            if self.vision_api_available:
+                logger.info("Attempting AI-OCR with Vision API...")
+                result = self._extract_with_vision_api(image_bytes)
+                if result["success"]:
+                    # 日付が抽出できなかった場合、現在の日時を使用
+                    if result["data"] and not result["data"].get("date"):
+                        result["data"]["date"] = datetime.now().strftime("%Y-%m-%d")
+                        result["message"] += " 日付は現在の日付で補完しました。"
+                    return result
+                else:
+                    logger.warning("Vision API failed, falling back to traditional OCR")
+
+            # Fall back to traditional OCR processing
+            # Tesseractが利用できない場合のエラー
+            if not self.tesseract_available:
+                return {
+                    "success": False,
+                    "message": "OCRエンジンが利用できません。Tesseract OCRをインストールしてください。",
+                    "data": None
+                }
+
             
             # Vision APIモードの場合
             if processing_mode == "vision" and self.openai_client:
