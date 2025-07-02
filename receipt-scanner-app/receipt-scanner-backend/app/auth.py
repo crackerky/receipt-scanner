@@ -34,7 +34,6 @@ def create_fake_test_user() -> User:
         username="test_user",
         email="test@example.com",
         is_active=True,
-        is_superuser=False,
         hashed_password=get_password_hash("test_password")
     )
 
