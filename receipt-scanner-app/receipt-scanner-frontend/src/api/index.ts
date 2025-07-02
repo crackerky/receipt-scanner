@@ -268,3 +268,8 @@ export async function healthCheck(): Promise<boolean> {
 export async function getApiStatus(): Promise<ApiResponse> {
   return apiRequest(`${API_URL}/api/status`);
 }
+
+// レシート画像を取得する関数を追加
+export function getReceiptImageUrl(receiptId: number): string {
+  return `${API_URL}/api/receipts/${receiptId}/image`;
+}
